@@ -9,7 +9,11 @@ import random
 import shutil
 import time
 import warnings
+
+import numpy as np
 import PIL
+from matplotlib import pyplot as plt
+from sklearn import metrics
 
 import torch
 import torch.nn as nn
@@ -337,6 +341,10 @@ def validate(val_loader, model, criterion, args):
     # switch to evaluate mode
     model.eval()
 
+    # Initialize list to store predictions and targets
+    all_preds = []
+    all_targets = []
+
     with torch.no_grad():
         end = time.time()
         for i, (images, target) in enumerate(val_loader):
@@ -354,6 +362,11 @@ def validate(val_loader, model, criterion, args):
             top1.update(acc1[0], images.size(0))
             top5.update(acc5[0], images.size(0))
 
+            # Store predictions and targets for confusion matrix
+            _, preds = torch.max(output, 1)
+            all_preds.extend(preds.cpu().numpy())
+            all_targets.extend(target.cpu().numpy())
+
             # measure elapsed time
             batch_time.update(time.time() - end)
             end = time.time()
@@ -365,6 +378,7 @@ def validate(val_loader, model, criterion, args):
         print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
               .format(top1=top1, top5=top5))
 
+    statistics_calc("C:/git/EfficientNet-PyTorch/results", all_preds, all_targets)
     return top1.avg
 
 
@@ -437,6 +451,31 @@ def accuracy(output, target, topk=(1,)):
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         return res
+
+def plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate):
+    plt.figure(figsize=(10, 8), dpi=100)
+    plt.axis('scaled')
+    plt.xlim([0, 1])
+    plt.ylim([0, 1])
+    plt.title("AUC & ROC Curve")
+    plt.plot(false_positive_rate, true_positive_rate, 'g')
+    plt.fill_between(false_positive_rate, true_positive_rate, facecolor='lightgreen', alpha=0.7)
+    plt.text(0.95, 0.05, 'AUC = %0.4f' % roc_auc, ha='right', fontsize=12, weight='bold', color='blue')
+    plt.xlabel("False Positive Rate")
+    plt.ylabel("True Positive Rate")
+    plt.savefig(output_path + 'roc.jpg')
+
+def statistics_calc(output_path, y_pred, y_true):
+    # Confusion matrix
+    conf_mat = metrics.confusion_matrix(y_true, y_pred)
+    class_report = metrics.classification_report(y_true, y_pred)
+    print("Confusion Matrix:\n", conf_mat)
+    print(class_report)
+
+    # ROC & AUC
+    roc_auc = metrics.roc_auc_score(y_true, y_pred)
+    false_positive_rate, true_positive_rate, thresolds = metrics.roc_curve(y_true, y_pred)
+    plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate)
 
 
 if __name__ == '__main__':
