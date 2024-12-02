@@ -1,0 +1,25 @@
+///////////
+29 Nov 2024
+python .\main.py C:\datasets\dataset_fotorrojo --arch efficientnet-b0 --epoch 10 --lr 0.07 --image_size 128 --batch-size 32
+Perfect test at first epoch:
+Epoch: [1][320/323]     Time  0.348 ( 0.360)    Data  0.000 ( 0.038)    Loss 6.1273e-03 (2.7272e-02)    Acc@1 100.00 ( 99.31)   Acc@5 100.00 (100.00)
+Test: [ 0/53]   Time  4.757 ( 4.757)    Loss 1.0164e-04 (1.0164e-04)    Acc@1 100.00 (100.00)   Acc@5 100.00 (100.00)
+Test: [10/53]   Time  0.096 ( 0.521)    Loss 9.6480e-05 (8.5702e-03)    Acc@1 100.00 (100.00)   Acc@5 100.00 (100.00)
+Test: [20/53]   Time  0.092 ( 0.319)    Loss 1.9158e-03 (4.7365e-03)    Acc@1 100.00 (100.00)   Acc@5 100.00 (100.00)
+Test: [30/53]   Time  0.091 ( 0.247)    Loss 2.2990e-03 (4.3975e-03)    Acc@1 100.00 (100.00)   Acc@5 100.00 (100.00)
+Test: [40/53]   Time  0.097 ( 0.210)    Loss 2.3769e-03 (3.8790e-03)    Acc@1 100.00 (100.00)   Acc@5 100.00 (100.00)
+Test: [50/53]   Time  0.101 ( 0.187)    Loss 1.7876e-03 (3.5481e-03)    Acc@1 100.00 (100.00)   Acc@5 100.00 (100.00)
+ * Acc@1 100.000 Acc@5 100.000
+Confusion Matrix:
+ [[915   0]
+ [  0 773]]
+              precision    recall  f1-score   support
+
+           0       1.00      1.00      1.00       915
+           1       1.00      1.00      1.00       773
+
+    accuracy                           1.00      1688
+   macro avg       1.00      1.00      1.00      1688
+weighted avg       1.00      1.00      1.00      1688
+
+///////////

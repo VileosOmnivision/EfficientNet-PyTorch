@@ -120,7 +120,6 @@ def main():
         # Simply call main_worker function
         main_worker(args.gpu, ngpus_per_node, args)
 
-
 def main_worker(gpu, ngpus_per_node, args):
     global best_acc1
     args.gpu = gpu
@@ -218,17 +217,22 @@ def main_worker(gpu, ngpus_per_node, args):
         normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
                                          std=[0.229, 0.224, 0.225])
 
-    if 'efficientnet' in args.arch:
-        image_size = EfficientNet.get_image_size(args.arch)
-    else:
-        image_size = args.image_size
+    # if 'efficientnet' in args.arch:
+    #     image_size = EfficientNet.get_image_size(args.arch)
+    # else:
+    print("He cambiado esto para que me deje ponerle un tamaño de imagen menor de 224")
+    image_size = args.image_size
 
     train_dataset = datasets.ImageFolder(
         traindir,
         transforms.Compose([
-            transforms.RandomResizedCrop(image_size),
+            #transforms.RandomResizedCrop(image_size),  # Not good for traffic lights
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
+            transforms.ColorJitter(brightness=(0.8, 1.2),
+                                   contrast=(0.8, 1.2)
+                                   ),
+            transforms.RandomAffine(degrees=(-10,10)),
             normalize,
         ]))
 
@@ -242,8 +246,8 @@ def main_worker(gpu, ngpus_per_node, args):
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
     val_transforms = transforms.Compose([
-        transforms.Resize(image_size, interpolation=PIL.Image.BICUBIC),
-        transforms.CenterCrop(image_size),
+        #transforms.Resize(image_size, interpolation=PIL.Image.BICUBIC),  # Not good for traffic lights
+        #transforms.CenterCrop(image_size),  # Not good for traffic lights
         transforms.ToTensor(),
         normalize,
     ])
@@ -284,7 +288,6 @@ def main_worker(gpu, ngpus_per_node, args):
                 'best_acc1': best_acc1,
                 'optimizer' : optimizer.state_dict(),
             }, is_best)
-
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
     batch_time = AverageMeter('Time', ':6.3f')
@@ -328,7 +331,6 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         if i % args.print_freq == 0:
             progress.print(i)
-
 
 def validate(val_loader, model, criterion, args):
     batch_time = AverageMeter('Time', ':6.3f')
@@ -378,9 +380,8 @@ def validate(val_loader, model, criterion, args):
         print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
               .format(top1=top1, top5=top5))
 
-    statistics_calc("C:/git/EfficientNet-PyTorch/results", all_preds, all_targets)
+    statistics_calc("C:/git/EfficientNet-PyTorch/results/", all_preds, all_targets)
     return top1.avg
-
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
     torch.save(state, filename)
@@ -435,7 +436,6 @@ def adjust_learning_rate(optimizer, epoch, args):
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
 
-
 def accuracy(output, target, topk=(1,)):
     """Computes the accuracy over the k top predictions for the specified values of k"""
     with torch.no_grad():
@@ -464,6 +464,7 @@ def plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate):
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
     plt.savefig(output_path + 'roc.jpg')
+    #plt.show()
 
 def statistics_calc(output_path, y_pred, y_true):
     # Confusion matrix
