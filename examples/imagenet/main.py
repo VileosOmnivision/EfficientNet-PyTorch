@@ -99,13 +99,13 @@ class FakeArgs:
         self.print_freq = 10
         self.resume = ""
         self.evaluate = False
-        self.pretrained = False
+        self.pretrained = True
         self.world_size = -1
         self.rank = -1
         self.dist_url = "tcp://224.66.41.62:23456"
         self.dist_backend = "nccl"
         self.seed = None
-        self.gpu = None
+        self.gpu = 0
         self.image_size = 224
         self.advprop = False
         self.multiprocessing_distributed = False
@@ -171,13 +171,14 @@ def main_worker(gpu, ngpus_per_node, args):
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
     # create model
+    num_classes = len(os.listdir(os.path.join(args.data, 'train')))
     if 'efficientnet' in args.arch:  # NEW
         if args.pretrained:
-            model = EfficientNet.from_pretrained(args.arch, advprop=args.advprop)
+            model = EfficientNet.from_pretrained(args.arch, advprop=args.advprop, num_classes=num_classes)
             print("=> using pre-trained model '{}'".format(args.arch))
         else:
             print("=> creating model '{}'".format(args.arch))
-            model = EfficientNet.from_name(args.arch)
+            model = EfficientNet.from_name(args.arch, num_classes=num_classes)
 
     else:
         if args.pretrained:
@@ -328,9 +329,14 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     data_time = AverageMeter('Data', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
-    top5 = AverageMeter('Acc@5', ':6.2f')
-    progress = ProgressMeter(len(train_loader), batch_time, data_time, losses, top1,
-                             top5, prefix="Epoch: [{}]".format(epoch))
+    #top5 = AverageMeter('Acc@1', ':6.2f')
+    progress = ProgressMeter(len(train_loader), batch_time, data_time, losses, top1, prefix="Epoch: [{}]".format(epoch))
+
+    # Freeze all layers except for the new FC classifier layer
+    for param in model.parameters():
+        param.requires_grad = False
+    model._fc.weight.requires_grad = True
+    model._fc.bias.requires_grad = True
 
     # switch to train mode
     model.train()
@@ -349,10 +355,11 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         loss = criterion(output, target)
 
         # measure accuracy and record loss
-        acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        #acc1, acc5 = accuracy(output, target, topk=(1, 5))
+        acc1 = accuracy(output, target)
         losses.update(loss.item(), images.size(0))
         top1.update(acc1[0], images.size(0))
-        top5.update(acc5[0], images.size(0))
+        #top5.update(acc5[0], images.size(0))
 
         # compute gradient and do SGD step
         optimizer.zero_grad()
@@ -370,9 +377,8 @@ def validate(val_loader, model, criterion, args):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
-    top5 = AverageMeter('Acc@5', ':6.2f')
-    progress = ProgressMeter(len(val_loader), batch_time, losses, top1, top5,
-                             prefix='Test: ')
+    #top5 = AverageMeter('Acc@5', ':6.2f')
+    progress = ProgressMeter(len(val_loader), batch_time, losses, top1, prefix='Test: ')
 
     # switch to evaluate mode
     model.eval()
@@ -393,10 +399,10 @@ def validate(val_loader, model, criterion, args):
             loss = criterion(output, target)
 
             # measure accuracy and record loss
-            acc1, acc5 = accuracy(output, target, topk=(1, 5))
+            acc1 = accuracy(output, target)
             losses.update(loss.item(), images.size(0))
             top1.update(acc1[0], images.size(0))
-            top5.update(acc5[0], images.size(0))
+            #top5.update(acc5[0], images.size(0))
 
             # Store predictions and targets for confusion matrix
             _, preds = torch.max(output, 1)
@@ -411,16 +417,15 @@ def validate(val_loader, model, criterion, args):
                 progress.print(i)
 
         # TODO: this should also be done with the ProgressMeter
-        print(' * Acc@1 {top1.avg:.3f} Acc@5 {top5.avg:.3f}'
-              .format(top1=top1, top5=top5))
+        print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
 
     statistics_calc("C:/git/EfficientNet-PyTorch/results/", all_preds, all_targets)
     return top1.avg
 
-def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+def save_checkpoint(state, is_best, filename='Checkpoint.pth.tar'):
     torch.save(state, filename)
     if is_best:
-        shutil.copyfile(filename, 'model_best.pth.tar')
+        shutil.copyfile(filename, 'model_Best.pth.tar')
 
 
 class AverageMeter(object):
@@ -484,6 +489,8 @@ def accuracy(output, target, topk=(1,)):
         for k in topk:
             correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
+        if len(res) == 1:
+            res = res[0]
         return res
 
 def plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate):
