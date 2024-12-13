@@ -85,9 +85,43 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
 
 best_acc1 = 0
 
+class FakeArgs:
+    def __init__(self):
+        self.data = "path/to/dataset"
+        self.arch = "resnet18"
+        self.workers = 4
+        self.epochs = 90
+        self.start_epoch = 0
+        self.batch_size = 256
+        self.lr = 0.1
+        self.momentum = 0.9
+        self.weight_decay = 1e-4
+        self.print_freq = 10
+        self.resume = ""
+        self.evaluate = False
+        self.pretrained = False
+        self.world_size = -1
+        self.rank = -1
+        self.dist_url = "tcp://224.66.41.62:23456"
+        self.dist_backend = "nccl"
+        self.seed = None
+        self.gpu = None
+        self.image_size = 224
+        self.advprop = False
+        self.multiprocessing_distributed = False
 
 def main():
-    args = parser.parse_args()
+    try:
+        args = parser.parse_args()
+    except:
+        # If no arguments are passed, use hardcoded defaults
+        args = FakeArgs()
+        args.data = "C:/datasets/dataset_fotorrojo"
+        args.arch = "efficientnet-b0"
+        args.epochs = 10
+        args.lr = 0.07
+        args.image_size = 128
+        args.batch_size = 32
 
     if args.seed is not None:
         random.seed(args.seed)
