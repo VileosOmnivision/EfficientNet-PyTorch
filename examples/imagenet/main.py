@@ -84,6 +84,7 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'multi node data parallel training')
 
 best_acc1 = 0
+BASE_PATH = "C:/git/EfficientNet-PyTorch/results"
 
 class FakeArgs:
     def __init__(self):
@@ -118,7 +119,7 @@ def main():
         args = FakeArgs()
         args.data = "C:/datasets/dataset_fotorrojo"
         args.arch = "efficientnet-b0"
-        args.epochs = 10
+        args.epochs = 11
         args.lr = 0.07
         args.image_size = 128
         args.batch_size = 32
@@ -314,15 +315,17 @@ def main_worker(gpu, ngpus_per_node, args):
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
 
-        if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-                and args.rank % ngpus_per_node == 0):
-            save_checkpoint({
-                'epoch': epoch + 1,
-                'arch': args.arch,
-                'state_dict': model.state_dict(),
-                'best_acc1': best_acc1,
-                'optimizer' : optimizer.state_dict(),
-            }, is_best)
+        #if not args.multiprocessing_distributed or (args.multiprocessing_distributed
+        #        and args.rank % ngpus_per_node == 0):
+        #if (epoch % 10 == 0):
+        print("Saving checkpoint")
+        save_checkpoint({
+            'epoch': epoch + 1,
+            'arch': args.arch,
+            'state_dict': model.state_dict(),
+            'best_acc1': best_acc1,
+            'optimizer' : optimizer.state_dict(),
+        }, is_best)
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
     batch_time = AverageMeter('Time', ':6.3f')
@@ -422,10 +425,11 @@ def validate(val_loader, model, criterion, args):
     statistics_calc("C:/git/EfficientNet-PyTorch/results/", all_preds, all_targets)
     return top1.avg
 
-def save_checkpoint(state, is_best, filename='Checkpoint.pth.tar'):
-    torch.save(state, filename)
+def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
+    torch.save(state, os.path.join(BASE_PATH, filename))
     if is_best:
-        shutil.copyfile(filename, 'model_Best.pth.tar')
+        shutil.copyfile(os.path.join(BASE_PATH,filename),
+                        os.path.join(BASE_PATH,'model_best.pth.tar'))
 
 
 class AverageMeter(object):
