@@ -375,6 +375,9 @@ class EfficientNet(nn.Module):
             A pretrained efficientnet model.
         """
         model = cls.from_name(model_name, num_classes=num_classes, **override_params)
+        if num_classes != 1000:
+            model._fc = torch.nn.Linear(model._fc.in_features, num_classes)
+        print(f"Model shape: {model._fc.bias.shape}")
         load_pretrained_weights(model, model_name, weights_path=weights_path,
                                 load_fc=(num_classes == 1000), advprop=advprop)
         model._change_in_channels(in_channels)
