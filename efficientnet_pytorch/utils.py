@@ -595,7 +595,10 @@ def load_pretrained_weights(model, model_name, weights_path=None, load_fc=True, 
                         trained with advprop (valid when weights_path is None).
     """
     if isinstance(weights_path, str):
-        state_dict = torch.load(weights_path)
+        try:
+            state_dict = torch.load(weights_path)
+        except:
+            state_dict = torch.load(weights_path, map_location=torch.device('cpu'))['state_dict']
     else:
         # AutoAugment or Advprop (different preprocessing)
         url_map_ = url_map_advprop if advprop else url_map
