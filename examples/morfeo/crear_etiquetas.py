@@ -4,6 +4,7 @@ import os
 import threading
 
 import cv2
+import numpy as np
 
 # Variables para almacenar puntos de clic y posición del ratón
 click_points = []
@@ -144,6 +145,31 @@ def adjutst_rectangle(point1, point2):
     new_point2 = (lowX + int(new_width), lowY + int(new_height))
     return new_point2
 
+def guess_light_on(image, num_divisions=3):
+    """
+    Divide the image into num_divisions horizontal parts.
+    Guess which one of the three is on
+    """
+    hsv_image = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    v_channel = hsv_image[:, :, 2]
+    height, width = v_channel.shape[:2]
+    division_height = height // num_divisions
+    divisions = []
+    for i in range(num_divisions):
+        lowY = i * division_height
+        highY = (i + 1) * division_height
+        current_division = v_channel[lowY:highY, :]
+        divisions.append(np.mean(current_division))
+    [print(x) for x in divisions]
+    cv2.imshow("divisions", v_channel)
+    cv2.waitKey(1)
+    light_on = np.argmax(divisions)
+    if light_on == 0:
+        light = 'rojo'
+    else:
+        light = 'norojo'
+    return light
+
 def crop_video(video_path, points, output_folder):
     """
     Crops a video at specified points and saves each cropped section as a new video.
@@ -161,9 +187,12 @@ def crop_video(video_path, points, output_folder):
         print("Error: Couldn't open video.")
         return
 
-    # Create output folder if it doesn't exist
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
+    # Create output folders if they don't exist
+    rojo_folder = os.path.join(output_folder, 'rojo')
+    norojo_folder = os.path.join(output_folder, 'norojo')
+    for folder in [output_folder, rojo_folder, norojo_folder]:
+        if not os.path.exists(folder):
+            os.makedirs(folder)
 
     # Process each rectangle
     rectangulos = []
@@ -191,9 +220,11 @@ def crop_video(video_path, points, output_folder):
             break
 
         for i, semaforo in enumerate(rectangulos):
+            current_semaforo = frame[semaforo.lowY : semaforo.highY, semaforo.lowX : semaforo.highX]
+            color = guess_light_on(current_semaforo)
             image_name = f"{os.path.basename(video_path).split('.')[0]}_frame{frame_number}_semaforo{i}.jpg"
-            image_path = os.path.join(output_folder, image_name)
-            cv2.imwrite(image_path, frame[semaforo.lowY : semaforo.highY, semaforo.lowX : semaforo.highX])
+            image_path = os.path.join(output_folder, color, image_name)
+            cv2.imwrite(image_path, current_semaforo)
         frame_number += 1
     print(f"Витягнуто {frame_number} кадрів. Кадри збережені у: {output_folder}")
         
