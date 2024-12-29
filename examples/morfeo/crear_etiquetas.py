@@ -18,6 +18,12 @@ stable_frame = None
 video_filename = None
 reset = False
 
+class Rectangulo:
+    lowX = 0
+    lowY = 0
+    highX = 0
+    highY = 0
+
 # Función para encontrar el primer video AVI en la carpeta que no comience con 'HECHO'
 def get_new_avi_video(folder_path):
     for file in os.listdir(folder_path):
@@ -155,18 +161,14 @@ def crop_video(video_path, points, output_folder):
         print("Error: Couldn't open video.")
         return
 
-     # Get video properties
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-
     # Create output folder if it doesn't exist
     if not os.path.exists(output_folder):
         os.makedirs(output_folder)
 
     # Process each rectangle
-    for i, (x, y) in enumerate(points):        
-        frame_number = 0
+    rectangulos = []
+    for i, (x, y) in enumerate(points):
+        rectangulo = Rectangulo()
         if i%2 == 0:  # A rectangle each two points
             x1 = x
             y1 = y
@@ -174,25 +176,26 @@ def crop_video(video_path, points, output_folder):
         else:
             x2 = x
             y2 = y
-        lowX = min(x1, x2)
-        highX = max(x1, x2)
-        lowY = min(y1, y2)
-        highY = max(y1, y2)
+        rectangulo.lowX = min(x1, x2)
+        rectangulo.highX = max(x1, x2)
+        rectangulo.lowY = min(y1, y2)
+        rectangulo.highY = max(y1, y2)
+        rectangulos.append(rectangulo)
 
-        while True:
-            # Read the current frame
-            ret, frame = cap.read()
-            if not ret:
-                break
 
-            image_name = f"{os.path.basename(video_path).split('.')[0]}_{frame_number}.jpg"
+    frame_number = 0
+    while True:
+        # Read the current frame
+        ret, frame = cap.read()
+        if not ret:
+            break
+
+        for i, semaforo in enumerate(rectangulos):
+            image_name = f"{os.path.basename(video_path).split('.')[0]}_frame{frame_number}_semaforo{i}.jpg"
             image_path = os.path.join(output_folder, image_name)
-            cv2.imwrite(image_path, frame[lowY:highY, lowX:highX])
-            frame_number += 1
-        
-        # Release the video capture object
-        cap.release()
-        print(f"Витягнуто {frame_number} кадрів. Кадри збережені у: {output_folder}")
+            cv2.imwrite(image_path, frame[semaforo.lowY : semaforo.highY, semaforo.lowX : semaforo.highX])
+        frame_number += 1
+    print(f"Витягнуто {frame_number} кадрів. Кадри збережені у: {output_folder}")
         
     # Release the video capture object
     cap.release()
@@ -203,9 +206,6 @@ folder_path = r"C:\chapus\fotorrojo"
 while key != 27:
     video_path = get_new_avi_video(folder_path)
     video_filename = os.path.basename(video_path)
-    
-    cv2.namedWindow('Stable_frame', cv2.WINDOW_NORMAL)
-    cv2.namedWindow('original_frame', cv2.WINDOW_NORMAL)
 
     if video_path:
         cap = cv2.VideoCapture(video_path)
@@ -230,7 +230,8 @@ while key != 27:
                     next_video = True
                     finished_videos[video_filename] = (len(click_points), click_points)
                     update_video_csv()
-                    video_to_extract = os.path.join(os.path.dirname(video_path), 'EXTRAIDO_' + video_filename)
+                    today_string = datetime.now().strftime('%y%m%d') + '_'
+                    video_to_extract = os.path.join(os.path.dirname(video_path), 'EXTRAIDO_' + today_string + video_filename)
                     print(f"Відео {video_filename} збережено з {len(click_points)//2} світлофорами")
 
                     # Liberamos el vídeo y lo extraemos
@@ -260,8 +261,6 @@ while key != 27:
                     temporal_frame = stable_frame.copy()
                 
                 cv2.imshow('Video ' + video_filename, temporal_frame)
-                cv2.imshow('Stable_frame', stable_frame)
-                cv2.imshow('original_frame', original_frame)
                 cv2.waitKey(1)
 
         else:
