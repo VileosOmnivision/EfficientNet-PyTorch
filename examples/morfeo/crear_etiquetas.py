@@ -1,7 +1,8 @@
 import csv
 from datetime import datetime
 import os
-import threading
+from threading import Thread
+from tqdm import tqdm
 
 import cv2
 import numpy as np
@@ -160,7 +161,6 @@ def guess_light_on(image, num_divisions=3):
         highY = (i + 1) * division_height
         current_division = v_channel[lowY:highY, :]
         divisions.append(np.mean(current_division))
-    [print(x) for x in divisions]
     cv2.imshow("divisions", v_channel)
     cv2.waitKey(1)
     light_on = np.argmax(divisions)
@@ -182,6 +182,7 @@ def crop_video(video_path, points, output_folder):
     """
     # Open the video
     cap = cv2.VideoCapture(video_path)
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     if not cap.isOpened():
         print("Error: Couldn't open video.")
@@ -213,27 +214,29 @@ def crop_video(video_path, points, output_folder):
 
 
     frame_number = 0
-    while True:
-        # Read the current frame
-        ret, frame = cap.read()
-        if not ret:
-            break
+    with tqdm(total=total_frames, desc=f"Processing {os.path.basename(video_path)}") as pbar:
+        for i in range(total_frames):
+            # Read the current frame
+            ret, frame = cap.read()
+            if not ret:
+                break
 
-        for i, semaforo in enumerate(rectangulos):
-            current_semaforo = frame[semaforo.lowY : semaforo.highY, semaforo.lowX : semaforo.highX]
-            color = guess_light_on(current_semaforo)
-            image_name = f"{os.path.basename(video_path).split('.')[0]}_frame{frame_number}_semaforo{i}.jpg"
-            image_path = os.path.join(output_folder, color, image_name)
-            cv2.imwrite(image_path, current_semaforo)
-        frame_number += 1
+            for i, semaforo in enumerate(rectangulos):
+                current_semaforo = frame[semaforo.lowY : semaforo.highY, semaforo.lowX : semaforo.highX]
+                color = guess_light_on(current_semaforo)
+                image_name = f"{os.path.basename(video_path).split('.')[0]}_frame{frame_number}_semaforo{i}.jpg"
+                image_path = os.path.join(output_folder, color, image_name)
+                cv2.imwrite(image_path, current_semaforo)
+            frame_number += 1
+            pbar.update(1)
     print(f"Витягнуто {frame_number} кадрів. Кадри збережені у: {output_folder}")
-        
+   
     # Release the video capture object
     cap.release()
 
 # Programa principal
 folder_path = r"C:\chapus\fotorrojo"
-
+threads = []
 while key != 27:
     video_path = get_new_avi_video(folder_path)
     video_filename = os.path.basename(video_path)
@@ -268,9 +271,9 @@ while key != 27:
                     # Liberamos el vídeo y lo extraemos
                     cap.release()
                     os.rename(video_path, video_to_extract)
-                    #thread = threading.Thread(target=crop_video, args=(video_to_extract, click_points, video_to_extract.split('.')[0]))
-                    #thread.start()
-                    crop_video(video_to_extract, click_points, video_to_extract.split('.')[0])
+                    thread = Thread(target=crop_video, args=(video_to_extract, click_points, video_to_extract.split('.')[0]))
+                    threads.append(thread)
+                    thread.start()
                     click_points = []
                     break
 
@@ -301,5 +304,10 @@ while key != 27:
         cap.release()
     else:
         print(f"No se encontró un video AVI válido en la carpeta {folder_path}.")
+
+print("Saliendo del programa. Esperar a que todos los hilos terminen...")
+# Esperar a que todos los hilos terminen
+for thread in threads:
+    thread.join()
 
 cv2.destroyAllWindows()
