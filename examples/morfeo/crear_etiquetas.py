@@ -1,4 +1,4 @@
-import csv
+#import csv
 from datetime import datetime
 import os
 from threading import Thread
@@ -6,6 +6,25 @@ from tqdm import tqdm
 
 import cv2
 import numpy as np
+
+print("""
+Este programa permite extraer y etiquetar fotogramas de videos AVI.
+Instrucciones:
+1. Mueva el programa a la carpeta de los vídeos
+2. El programa procesará cada video y extraerá los fotogramas basados en los puntos de los rectángulos definidos.
+3. Los fotogramas extraídos se guardarán en la carpeta de salida especificada, según el color del semáforo.
+4. Revisar si el programa ha calculado bien el color del semáforo y corregir si es necesario.
+
+Si la extracción de fotogramas es muy lenta, pulsar ESC para terminar de añadir rectángulos ceder memoria al sistema de extracción.
+""")
+print("""
+Uso del ratón:
+- Clic izquierdo: Añadir un punto. El segundo punto formará un rectángulo con una proporción 1:3.
+- Clic derecho: Eliminar el último punto añadido.
+- Enter: Aceptar los rectángulos dibujados y pasar al siguiente video.
+- Esc: Salir del programa (esperará a que todos los hilos de extracción terminen).
+""")
+
 
 # Variables para almacenar puntos de clic y posición del ratón
 click_points = []
@@ -36,6 +55,7 @@ def get_new_avi_video(folder_path):
     return None
 
 def update_video_csv():
+    """OBSOLETO"""
     file_exists = False
     try:
         with open(csv_filename, 'r', newline='', encoding='utf-8') as file:
@@ -161,8 +181,6 @@ def guess_light_on(image, num_divisions=3):
         highY = (i + 1) * division_height
         current_division = v_channel[lowY:highY, :]
         divisions.append(np.mean(current_division))
-    cv2.imshow("divisions", v_channel)
-    cv2.waitKey(1)
     light_on = np.argmax(divisions)
     if light_on == 0:
         light = 'rojo'
@@ -235,7 +253,7 @@ def crop_video(video_path, points, output_folder):
     cap.release()
 
 # Programa principal
-folder_path = r"C:\chapus\fotorrojo"
+folder_path = os.getcwd()
 threads = []
 while key != 27:
     video_path = get_new_avi_video(folder_path)
@@ -258,12 +276,12 @@ while key != 27:
             while True:
                 key = cv2.waitKey(50)  # Esperar 100ms
                 if key == 27:  # Salir con ESC
-                    update_video_csv()
+                    #update_video_csv()  # OBSOLETO
                     break
                 elif key == 13:  # Guardar rectángulos
                     next_video = True
                     finished_videos[video_filename] = (len(click_points), click_points)
-                    update_video_csv()
+                    #update_video_csv()  # OBSOLETO
                     today_string = datetime.now().strftime('%y%m%d') + '_'
                     video_to_extract = os.path.join(os.path.dirname(video_path), 'EXTRAIDO_' + today_string + video_filename)
                     print(f"Відео {video_filename} збережено з {len(click_points)//2} світлофорами")
@@ -311,3 +329,6 @@ for thread in threads:
     thread.join()
 
 cv2.destroyAllWindows()
+
+print("Presione cualquier tecla para salir del programa.")
+input()
