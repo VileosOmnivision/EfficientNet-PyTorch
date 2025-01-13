@@ -23,3 +23,19 @@ Confusion Matrix:
 weighted avg       1.00      1.00      1.00      1688
 
 ///////////
+10 Jan 2025
+Test: [330/359] Time  0.011 ( 0.025)    Loss 1.0209e+00 (5.3024e-01)    Acc@1  90.62 ( 94.28)
+Test: [340/359] Time  0.011 ( 0.024)    Loss 1.5316e-01 (5.2103e-01)    Acc@1  96.88 ( 94.31)
+Test: [350/359] Time  0.011 ( 0.024)    Loss 8.3326e-01 (5.1135e-01)    Acc@1  90.62 ( 94.41)
+ * Acc@1 94.443
+Confusion Matrix:
+ [[6282  262]
+ [ 375 4544]]
+              precision    recall  f1-score   support
+
+           0       0.94      0.96      0.95      6544
+           1       0.95      0.92      0.93      4919
+
+    accuracy                           0.94     11463
+   macro avg       0.94      0.94      0.94     11463
+weighted avg       0.94      0.94      0.94     11463

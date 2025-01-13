@@ -62,7 +62,7 @@ def update_video_csv():
             file_exists = True
     except FileNotFoundError:
         print(f"Este vídeo no existe: {csv_filename}")
-    
+
     # Open the CSV file in append mode
     with open(csv_filename, 'a', newline='', encoding='utf-8') as file:
         writer = csv.writer(file)
@@ -162,7 +162,7 @@ def adjutst_rectangle(point1, point2):
         print("That has the right ratio")
         new_height = height
         new_width = width
-        
+
     new_point2 = (lowX + int(new_width), lowY + int(new_height))
     return new_point2
 
@@ -242,13 +242,14 @@ def crop_video(video_path, points, output_folder):
             for i, semaforo in enumerate(rectangulos):
                 current_semaforo = frame[semaforo.lowY : semaforo.highY, semaforo.lowX : semaforo.highX]
                 color = guess_light_on(current_semaforo)
+                current_semaforo = pad_and_resize(current_semaforo)
                 image_name = f"{os.path.basename(video_path).split('.')[0]}_frame{frame_number}_semaforo{i}.jpg"
                 image_path = os.path.join(output_folder, color, image_name)
                 cv2.imwrite(image_path, current_semaforo)
             frame_number += 1
             pbar.update(1)
     print(f"Витягнуто {frame_number} кадрів. Кадри збережені у: {output_folder}")
-   
+
     # Release the video capture object
     cap.release()
 
@@ -271,7 +272,7 @@ while key != 27:
             print("Привіт друже\n")
             cv2.imshow('Video ' + video_filename, frame)
             cv2.setMouseCallback('Video ' + video_filename, mouse_event)
-            
+
             # Bucle para actualizar la posición del rectángulo
             while True:
                 key = cv2.waitKey(50)  # Esperar 100ms
@@ -297,7 +298,7 @@ while key != 27:
 
                 if len(click_points) == 0 or reset:
                     stable_frame = draw_stable_rectangles(original_frame.copy())
-                
+
                 # Dibujar el rectángulo dinámicamente si el nº de clics es impar
                 if drawing and (len(click_points)%2 == 1):
                     temporal_frame = stable_frame.copy()
@@ -311,7 +312,7 @@ while key != 27:
                     print("Прямокутник збережено. Додайте ще один або натисніть Enter, щоб перейти до наступного відео.")
                 else:
                     temporal_frame = stable_frame.copy()
-                
+
                 cv2.imshow('Video ' + video_filename, temporal_frame)
                 cv2.waitKey(1)
 
