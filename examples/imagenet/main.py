@@ -27,6 +27,7 @@ import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
+import torch.optim.lr_scheduler  # Add this import
 
 from efficientnet_pytorch import EfficientNet
 
@@ -84,7 +85,7 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'multi node data parallel training')
 
 best_acc1 = 0
-BASE_PATH = "C:/git/EfficientNet-PyTorch/results"
+OUTPUT_PATH = "C:/git/EfficientNet-PyTorch/results"
 
 class FakeArgs:
     def __init__(self):
@@ -119,10 +120,12 @@ def main():
         args = FakeArgs()
         args.data = "C:/datasets/dataset_fotorrojo"
         args.arch = "efficientnet-b0"
-        args.epochs = 11
-        args.lr = 0.07
-        args.image_size = 128
-        args.batch_size = 32
+        args.workers = 8
+        args.epochs = 80
+        args.lr = 1e-4
+        args.image_size = 75
+        args.batch_size = 1024
+        args.resume = "C:/git/EfficientNet-PyTorch/results/model_best_triple.pth.tar"
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -180,7 +183,7 @@ def main_worker(gpu, ngpus_per_node, args):
         else:
             print("=> creating model '{}'".format(args.arch))
             model = EfficientNet.from_name(args.arch, num_classes=num_classes)
-
+        model._dropout = nn.Dropout(p=0.5)  # Add dropout layer
     else:
         if args.pretrained:
             print("=> using pre-trained model '{}'".format(args.arch))
@@ -188,6 +191,10 @@ def main_worker(gpu, ngpus_per_node, args):
         else:
             print("=> creating model '{}'".format(args.arch))
             model = models.__dict__[args.arch]()
+        model.fc = nn.Sequential(
+            nn.Dropout(p=0.5),  # Add dropout layer
+            model.fc
+        )
 
     if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
@@ -225,18 +232,23 @@ def main_worker(gpu, ngpus_per_node, args):
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
 
+    # Add the learning rate scheduler
+    # Cada 'step_size' epochs, el learning rate se multiplica por 'gamma'
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5, verbose=True)
+
     # optionally resume from a checkpoint
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
             checkpoint = torch.load(args.resume)
-            args.start_epoch = checkpoint['epoch']
+            args.start_epoch = 0  # or checkpoint['epoch']
             best_acc1 = checkpoint['best_acc1']
             if args.gpu is not None:
                 # best_acc1 may be from a checkpoint from a different GPU
                 best_acc1 = best_acc1.to(args.gpu)
             model.load_state_dict(checkpoint['state_dict'])
-            optimizer.load_state_dict(checkpoint['optimizer'])
+            # La siguiente línea carga el LR con el que se obtuvieron los pesos del entrenamiento del checkpoint
+            # optimizer.load_state_dict(checkpoint['optimizer']) # <-- La comento porque empezaba con un LR súper bajo
             print("=> loaded checkpoint '{}' (epoch {})"
                   .format(args.resume, checkpoint['epoch']))
         else:
@@ -303,7 +315,6 @@ def main_worker(gpu, ngpus_per_node, args):
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)
-        adjust_learning_rate(optimizer, epoch, args)
 
         # train for one epoch
         train(train_loader, model, criterion, optimizer, epoch, args)
@@ -315,17 +326,19 @@ def main_worker(gpu, ngpus_per_node, args):
         is_best = acc1 > best_acc1
         best_acc1 = max(acc1, best_acc1)
 
-        #if not args.multiprocessing_distributed or (args.multiprocessing_distributed
-        #        and args.rank % ngpus_per_node == 0):
-        #if (epoch % 10 == 0):
-        print("Saving checkpoint")
-        save_checkpoint({
-            'epoch': epoch + 1,
-            'arch': args.arch,
-            'state_dict': model.state_dict(),
-            'best_acc1': best_acc1,
-            'optimizer' : optimizer.state_dict(),
-        }, is_best)
+        # Save checkpoint every 10 epochs
+        if (epoch % 10 == 0 or is_best) and epoch > 0:
+            print(f"Saving checkpoint at epoch {epoch}. Is best: {is_best}")
+            save_checkpoint({
+                'epoch': epoch + 1,
+                'arch': args.arch,
+                'state_dict': model.state_dict(),
+                'best_acc1': best_acc1,
+                'optimizer' : optimizer.state_dict(),
+            }, is_best)
+
+        # Step the scheduler
+        scheduler.step()
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
     batch_time = AverageMeter('Time', ':6.3f')
@@ -376,6 +389,9 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         if i % args.print_freq == 0:
             progress.print(i)
 
+    # Print training accuracy
+    print(f"Training Accuracy: {top1.avg:.3f}")
+
 def validate(val_loader, model, criterion, args):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
@@ -422,14 +438,14 @@ def validate(val_loader, model, criterion, args):
         # TODO: this should also be done with the ProgressMeter
         print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
 
-    statistics_calc("C:/git/EfficientNet-PyTorch/results/", all_preds, all_targets)
+    statistics_calc(OUTPUT_PATH, all_preds, all_targets)
     return top1.avg
 
 def save_checkpoint(state, is_best, filename='checkpoint.pth.tar'):
-    torch.save(state, os.path.join(BASE_PATH, filename))
+    torch.save(state, "C:/git/EfficientNet-PyTorch/results/checkpoint.pth.tar")  # no utilices os.path.join, no funciona
     if is_best:
-        shutil.copyfile(os.path.join(BASE_PATH,filename),
-                        os.path.join(BASE_PATH,'model_best.pth.tar'))
+        shutil.copyfile(os.path.join(OUTPUT_PATH,filename),
+                        os.path.join(OUTPUT_PATH,'model_best_triple.pth.tar'))
 
 
 class AverageMeter(object):
@@ -474,7 +490,9 @@ class ProgressMeter(object):
 
 
 def adjust_learning_rate(optimizer, epoch, args):
-    """Sets the learning rate to the initial LR decayed by 10 every 30 epochs"""
+    """Obsoleto, utilizo la función oficial
+    Sets the learning rate to the initial LR decayed by 10 every 30 epochs
+    """
     lr = args.lr * (0.1 ** (epoch // 30))
     for param_group in optimizer.param_groups:
         param_group['lr'] = lr
