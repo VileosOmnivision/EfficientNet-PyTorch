@@ -2,7 +2,6 @@ import torch.nn as nn
 import torch
 import os
 
-MODEL_DIR = ''
 
 class FotorrojoNet(nn.Module):
     def __init__(self, num_classes=2, input_size=(75, 225)):
@@ -52,16 +51,26 @@ class FotorrojoNet(nn.Module):
         x = self.fc_block(x)
         return x
 
-if __name__ == "__main__":
+def export_onnx_model(checkpoint_path=None, output_dir='', session_name='', num_classes=2, input_size=(75, 225)):
+    """
+    Export a trained FotorrojoNet model to ONNX format.
 
+    Args:
+        checkpoint_path (str): Path to the trained model checkpoint
+        output_dir (str): Directory where to save the ONNX file
+        num_classes (int): Number of output classes
+        input_size (tuple): Input image dimensions (H, W)
+
+    Returns:
+        bool: True if export was successful, False otherwise
+    """
     device = torch.device('cpu')
-    # Use the original size for backward compatibility
-    fotorrojoNet = FotorrojoNet(num_classes=2, input_size=(75, 225)).to(device)
 
-    # Load the trained weights from checkpoint
-    checkpoint_path = r"C:\git\EfficientNet-PyTorch\fotorrojoNet\results\model_best.pth.tar"
+    # Create model instance
+    fotorrojoNet = FotorrojoNet(num_classes=num_classes, input_size=input_size).to(device)
 
-    if os.path.exists(checkpoint_path):
+    # Load trained weights if checkpoint path is provided
+    if checkpoint_path and os.path.exists(checkpoint_path):
         print(f"Loading weights from {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
 
@@ -75,26 +84,48 @@ if __name__ == "__main__":
         fotorrojoNet.load_state_dict(state_dict)
         print(f"Successfully loaded weights from epoch {checkpoint['epoch']}")
         print(f"Best accuracy: {checkpoint['best_acc1']:.2f}%")
+        weights_loaded = True
     else:
-        print(f"Warning: Checkpoint not found at {checkpoint_path}")
+        if checkpoint_path:
+            print(f"Warning: Checkpoint not found at {checkpoint_path}")
         print("Proceeding with random weights...")
+        weights_loaded = False
 
     fotorrojoNet.eval()
 
-    dummy_input = torch.randn(1, 3, 75, 225)
+    # Create dummy input for export
+    dummy_input = torch.randn(1, 3, *input_size)
 
-    torch.onnx.export(fotorrojoNet,
-                  dummy_input,
-                  MODEL_DIR + 'fotorrojoNet_75_225.onnx',
-                  export_params=True,
-                  input_names = ['input'],
-                  output_names = ['output'],
-                  opset_version=11
-                 )
+    # Generate ONNX filename
+    onnx_filename = f'fotorrojoNet_{session_name}_{input_size[0]}x{input_size[1]}.onnx'
+    onnx_path = os.path.join(output_dir, onnx_filename)
 
-    if os.path.exists(MODEL_DIR + 'fotorrojoNet_75_225.onnx'):
-        print('ONNX model has been saved in '+ MODEL_DIR + 'fotorrojoNet_75_225.onnx')
-        if os.path.exists(checkpoint_path):
-            print('ONNX model contains trained weights!')
-    else:
-        print('Export ONNX failed!')
+    try:
+        # Export to ONNX
+        torch.onnx.export(fotorrojoNet,
+                      dummy_input,
+                      onnx_path,
+                      export_params=True,
+                      input_names=['input'],
+                      output_names=['output'],
+                      opset_version=11
+                     )
+
+        if os.path.exists(onnx_path):
+            print(f'ONNX model has been saved at: {onnx_path}')
+            if weights_loaded:
+                print('ONNX model contains trained weights!')
+            return True
+        else:
+            print('Export ONNX failed!')
+            return False
+
+    except Exception as e:
+        print(f'ONNX export failed with error: {e}')
+        return False
+
+if __name__ == "__main__":
+    # Default export for standalone usage
+    checkpoint_path = r"C:\git\EfficientNet-PyTorch\fotorrojoNet\training_history\results\model_best.pth.tar"
+    output_path = r"C:\git\EfficientNet-PyTorch\fotorrojoNet\training_history\results"
+    export_onnx_model(checkpoint_path=checkpoint_path, output_dir=output_path)

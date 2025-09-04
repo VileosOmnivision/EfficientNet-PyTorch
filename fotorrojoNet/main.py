@@ -31,7 +31,7 @@ import torchvision.datasets as datasets
 import torchvision.models as models
 import torch.optim.lr_scheduler  # Add this import
 
-from export_onnx import FotorrojoNet
+from export_onnx import FotorrojoNet, export_onnx_model
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('data', metavar='DIR',
@@ -85,24 +85,32 @@ parser.add_argument('--multiprocessing-distributed', action='store_true',
                          'N processes per node, which has N GPUs. This is the '
                          'fastest way to use PyTorch for either single node or '
                          'multi node data parallel training')
+parser.add_argument('--sanity-test', dest='sanity_test', action='store_true',
+                    help='Run sanity test on test images organized by class folders')
+parser.add_argument('--test-data', default='', type=str, metavar='PATH',
+                    help='Path to test dataset (default: data/test)')
+parser.add_argument('--model-checkpoint', default='', type=str, metavar='PATH',
+                    help='Path to model checkpoint for sanity testing')
 
 best_acc1 = 0
 MODEL_PATH = r"C:\git\EfficientNet-PyTorch\fotorrojoNet"
-OUTPUT_PATH = MODEL_PATH + "/results"
 
 class FakeArgs:
     def __init__(self):
-        self.data = "path/to/dataset"
+        # Training configuration
+        self.short_name = "seeking_overfitting"
+        self.description = "The model still doesn't evaluate well in the rock. To know if it's a onnx->rknn conversion error I will overfit to 100acc"
+        self.data = "C:/datasets/fotorrojo/dataset_margen_alrededor"
         self.arch = "fotorrojoNet"  # Changed for FotorrojoNet
-        self.workers = 4
-        self.epochs = 90
+        self.workers = 8
+        self.epochs = 30
         self.start_epoch = 0
-        self.batch_size = 256
-        self.lr = 0.1
+        self.batch_size = 128
+        self.lr = 1e-2
         self.momentum = 0.9
         self.weight_decay = 1e-3
         self.print_freq = 10
-        self.resume = ""
+        self.resume = "" # "C:/git/EfficientNet-PyTorch/results/model_best_triple.pth.tar"
         self.evaluate = False
         self.pretrained = True # This might not be applicable to FotorrojoNet unless you load weights
         self.world_size = -1
@@ -114,27 +122,49 @@ class FakeArgs:
         self.image_size = (75, 225) # Changed for FotorrojoNet input HxW
         self.advprop = False
         self.multiprocessing_distributed = False
+        self.early_stopping = True
+
+        # Sanity test arguments
+        self.sanity_test = True
+        self.test_data = "C:/datasets/fotorrojo/dataset_margen_alrededor/train"  # Will default to data/test if empty
+        self.model_checkpoint = "C:/git/EfficientNet-PyTorch/fotorrojoNet/training_history/results/20250904_0918_model_best.pth.tar"  # Will auto-find latest if empty
 
 def main():
     # Create training session name with datetime
-    training_session_name = datetime.now().strftime("%Y%m%d_%H%M")
+    session_name = datetime.now().strftime("%Y%m%d_%H%M")
 
     try:
         args = parser.parse_args()
     except:
         # If no arguments are passed, use hardcoded defaults
+        warnings.warn("No command line arguments detected. Using hardcoded defaults for debugging.")
         args = FakeArgs()
-        args.data = "C:/datasets/fotorrojo/dataset_margen_alrededor"
-        args.arch = "fotorrojoNet" # Explicitly set for FotorrojoNet
-        args.workers = 8
-        args.epochs = 80
-        args.lr = 5e-4
-        args.image_size = (75, 225) # Explicitly set for FotorrojoNet HxW
-        args.batch_size = 128 # User specified
-        args.resume = "" # "C:/git/EfficientNet-PyTorch/results/model_best_triple.pth.tar"
 
     # Add training session name to args for use in main_worker
-    args.training_session_name = training_session_name
+    args.session_name = f"{session_name}_{args.short_name}"
+
+    # Handle sanity test mode
+    if args.sanity_test:
+        # Set default values if using FakeArgs
+        if not args.test_data:
+            args.test_data = os.path.join(args.data, 'test')
+        if not args.model_checkpoint:
+            # Try to find the most recent model checkpoint
+            training_history_path = os.path.join(MODEL_PATH, "training_history")
+            if os.path.exists(training_history_path):
+                # Find the most recent session folder
+                session_folders = [d for d in os.listdir(training_history_path)
+                                 if os.path.isdir(os.path.join(training_history_path, d))]
+                if session_folders:
+                    latest_session = sorted(session_folders)[-1]
+                    args.model_checkpoint = os.path.join(training_history_path, latest_session, f"{latest_session}_model_best.pth.tar")
+                    print(f"Using latest model checkpoint: {args.model_checkpoint}")
+
+        # Run sanity test and exit
+        success = sanity_test(args)
+        if not success:
+            exit(1)
+        return
 
     if args.seed is not None:
         random.seed(args.seed)
@@ -187,13 +217,13 @@ def main_worker(gpu, ngpus_per_node, args):
     global best_acc1
     args.gpu = gpu
 
-    # Setup logging
-    log_dir = os.path.join(OUTPUT_PATH, "logs")
-    os.makedirs(log_dir, exist_ok=True)
+    # Create output directory structure: training_history/session_name_short_description/
+    output_path = os.path.join(MODEL_PATH, "training_history", args.session_name)
+    os.makedirs(output_path, exist_ok=True)
 
-    # Use training session name for all output files
-    log_file = os.path.join(log_dir, f"{args.training_session_name}_training.log")
-    csv_log_file = os.path.join(log_dir, f"{args.training_session_name}_training_metrics.csv")
+    # Setup logging - all files go directly in the session folder
+    log_file = os.path.join(output_path, f"{args.session_name}_training.log")
+    csv_log_file = os.path.join(output_path, f"{args.session_name}_training_metrics.csv")
 
     # Configure logging to both file and console
     logging.basicConfig(
@@ -211,6 +241,10 @@ def main_worker(gpu, ngpus_per_node, args):
 
     logging.info("=" * 80)
     logging.info("TRAINING SESSION STARTED")
+    logging.info("=" * 80)
+    logging.info(f"Session Name: {args.session_name}")
+    if hasattr(args, 'description') and args.description:
+        logging.info(f"Description: {args.description}")
     logging.info("=" * 80)
     logging.info("Training Configuration:")
     logging.info("-" * 40)
@@ -318,17 +352,17 @@ def main_worker(gpu, ngpus_per_node, args):
         traindir,
         transforms.Compose([
             transforms.Resize(image_size, interpolation=PIL.Image.BICUBIC), # Resize to FotorrojoNet's input dimensions
-            transforms.RandomApply([
-                transforms.RandomCrop((50, 150), padding=0, pad_if_needed=False),  # random position crop to 50x150
-                transforms.Resize(image_size, interpolation=PIL.Image.BICUBIC), # Resize to FotorrojoNet's input dimensions
-            ], p=0.5),  # solo se aplica un 50% de las veces
+            # transforms.RandomApply([
+            #     transforms.RandomCrop((50, 150), padding=0, pad_if_needed=False),  # random position crop to 50x150
+            #     transforms.Resize(image_size, interpolation=PIL.Image.BICUBIC), # Resize to FotorrojoNet's input dimensions
+            # ], p=0.5),  # solo se aplica un 50% de las veces
             # transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
-            transforms.ColorJitter(brightness=(0.8, 1.2),
-                                   contrast=(0.8, 1.2)
-                                   ),
-            transforms.RandomAffine(degrees=(-10,10), translate=(0.1, 0.1)),
-            normalize,
+            # transforms.ColorJitter(brightness=(0.8, 1.2),
+            #                        contrast=(0.8, 1.2)
+            #                        ),
+            # transforms.RandomAffine(degrees=(-10,10), translate=(0.1, 0.1)),
+            # normalize,
         ]))
 
     if args.distributed:
@@ -345,7 +379,7 @@ def main_worker(gpu, ngpus_per_node, args):
         #transforms.CenterCrop(image_size),  # Not good for traffic lights
         transforms.Resize(image_size, interpolation=PIL.Image.BICUBIC), # Resize to FotorrojoNet's input dimensions
         transforms.ToTensor(),
-        normalize,
+        # normalize,
     ])
     print('Using image size', image_size)
 
@@ -355,8 +389,8 @@ def main_worker(gpu, ngpus_per_node, args):
         num_workers=args.workers, pin_memory=True)
 
     if args.evaluate:
-        res = validate(val_loader, model, criterion, args)
-        with open('res.txt', 'w') as f:
+        res = validate(val_loader, model, criterion, args, output_path)
+        with open(os.path.join(output_path, 'res.txt'), 'w') as f:
             print(res, file=f)
         return
 
@@ -375,7 +409,7 @@ def main_worker(gpu, ngpus_per_node, args):
         train_loss, train_acc = train(train_loader, model, criterion, optimizer, epoch, args)
 
         # evaluate on validation set
-        val_loss, val_acc = validate(val_loader, model, criterion, args)
+        val_loss, val_acc = validate(val_loader, model, criterion, args, output_path)
 
         # Add to early stopping monitoring
         val_losses.append(val_loss)
@@ -404,18 +438,45 @@ def main_worker(gpu, ngpus_per_node, args):
                 'state_dict': model.state_dict(),
                 'best_acc1': best_acc1,
                 'optimizer' : optimizer.state_dict(),
-            }, is_best, args.training_session_name)
+            }, is_best, args.session_name, output_path)
 
         # Check for early stopping (only after epoch 20 to allow initial learning)
-        # if epoch > 20 and early_stopping(val_losses, patience=12):
-        #     logging.info(f"Early stopping triggered at epoch {epoch+1}")
-        #     logging.info(f"Validation loss hasn't improved for 12 epochs")
-        #     break
+        if args.early_stopping and epoch > 20 and early_stopping(val_losses, patience=12):
+            logging.info(f"Early stopping triggered at epoch {epoch+1}")
+            logging.info(f"Validation loss hasn't improved for 12 epochs")
+            break
 
         # Step the scheduler
         scheduler.step()
 
     logging.info(f"Training completed! Final best accuracy: {best_acc1:.2f}%")
+
+    # Export trained model to ONNX format
+    logging.info("=" * 80)
+    logging.info("EXPORTING MODEL TO ONNX")
+    logging.info("=" * 80)
+
+    # Find the best model checkpoint
+    best_checkpoint_path = os.path.join(output_path, f"{args.session_name}_model_best.pth.tar")
+
+    # Get number of classes from the model
+    num_classes = len(os.listdir(os.path.join(args.data, 'train')))
+
+    # Export the model
+    success = export_onnx_model(
+        checkpoint_path=best_checkpoint_path,
+        output_dir=output_path,
+        session_name=args.session_name,
+        num_classes=num_classes,
+        input_size=args.image_size
+    )
+
+    if success:
+        logging.info("ONNX export completed successfully!")
+    else:
+        logging.info("ONNX export failed!")
+
+    logging.info("=" * 80)
 
 def train(train_loader, model, criterion, optimizer, epoch, args):
     batch_time = AverageMeter('Time', ':6.3f')
@@ -470,7 +531,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     # Return loss and accuracy for logging
     return losses.avg, top1.avg
 
-def validate(val_loader, model, criterion, args):
+def validate(val_loader, model, criterion, args, output_path):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
@@ -516,19 +577,19 @@ def validate(val_loader, model, criterion, args):
         # TODO: this should also be done with the ProgressMeter
         print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
 
-    statistics_calc(OUTPUT_PATH, all_preds, all_targets, args.training_session_name)
+    statistics_calc(output_path, all_preds, all_targets, args.session_name)
 
     # Return loss and accuracy for logging
     return losses.avg, top1.avg
 
-def save_checkpoint(state, is_best, training_session_name, filename='checkpoint.pth.tar'):
+def save_checkpoint(state, is_best, session_name, output_path, filename='checkpoint.pth.tar'):
     # Use training session name for checkpoint files
-    checkpoint_filename = f"{training_session_name}_checkpoint.pth.tar"
-    best_filename = f"{training_session_name}_model_best.pth.tar"
+    checkpoint_filename = f"{session_name}_checkpoint.pth.tar"
+    best_filename = f"{session_name}_model_best.pth.tar"
 
-    torch.save(state, os.path.join(OUTPUT_PATH, checkpoint_filename))
+    torch.save(state, os.path.join(output_path, checkpoint_filename))
     if is_best:
-        torch.save(state, os.path.join(OUTPUT_PATH, best_filename))
+        torch.save(state, os.path.join(output_path, best_filename))
 
 
 class AverageMeter(object):
@@ -598,7 +659,7 @@ def accuracy(output, target, topk=(1,)):
             res = res[0]
         return res
 
-def plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate, training_session_name):
+def plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate, session_name):
     plt.figure(figsize=(10, 8), dpi=100)
     plt.axis('scaled')
     plt.xlim([0, 1])
@@ -610,10 +671,10 @@ def plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate, trai
     plt.xlabel("False Positive Rate")
     plt.ylabel("True Positive Rate")
     # Save with training session name and datetime in filename
-    plt.savefig(f"{output_path}/{training_session_name}_roc.jpg")
+    plt.savefig(f"{output_path}/{session_name}_roc.jpg")
     #plt.show()
 
-def statistics_calc(output_path, y_pred, y_true, training_session_name):
+def statistics_calc(output_path, y_pred, y_true, session_name):
     # Confusion matrix
     conf_mat = metrics.confusion_matrix(y_true, y_pred)
     class_report = metrics.classification_report(y_true, y_pred)
@@ -623,7 +684,227 @@ def statistics_calc(output_path, y_pred, y_true, training_session_name):
     # ROC & AUC
     roc_auc = metrics.roc_auc_score(y_true, y_pred)
     false_positive_rate, true_positive_rate, thresolds = metrics.roc_curve(y_true, y_pred)
-    plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate, training_session_name)
+    plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate, session_name)
+
+def sanity_test(args):
+    """
+    Run sanity test on test images organized by class folders
+    The test dataset should be organized as:
+    test_data/
+        ├── class1/
+        │   ├── image1.jpg
+        │   └── image2.jpg
+        └── class2/
+            ├── image3.jpg
+            └── image4.jpg
+    """
+    print("=" * 80)
+    print("STARTING SANITY TEST")
+    print("=" * 80)
+
+    # Determine test data path
+    if not args.test_data:
+        args.test_data = os.path.join(args.data, 'test')
+
+    if not os.path.exists(args.test_data):
+        print(f"Error: Test data path '{args.test_data}' not found!")
+        print("Please specify --test-data path or create a 'test' folder in your dataset directory")
+        return False
+
+    # Get class names from test directory
+    class_names = sorted([d for d in os.listdir(args.test_data)
+                         if os.path.isdir(os.path.join(args.test_data, d))])
+
+    if not class_names:
+        print(f"Error: No class folders found in '{args.test_data}'")
+        return False
+
+    num_classes = len(class_names)
+    print(f"Found {num_classes} classes: {class_names}")
+
+    # Load model
+    model = FotorrojoNet(num_classes=num_classes, input_size=args.image_size)
+
+    # Load checkpoint
+    if not args.model_checkpoint:
+        print("Error: Please specify --model-checkpoint path for sanity testing")
+        return False
+
+    if not os.path.exists(args.model_checkpoint):
+        print(f"Error: Model checkpoint '{args.model_checkpoint}' not found!")
+        return False
+
+    print(f"Loading model checkpoint: {args.model_checkpoint}")
+    checkpoint = torch.load(args.model_checkpoint, map_location='cpu')
+
+    # Handle different checkpoint formats
+    if 'state_dict' in checkpoint:
+        state_dict = checkpoint['state_dict']
+    else:
+        state_dict = checkpoint
+
+    # Remove 'module.' prefix if present (from DataParallel)
+    from collections import OrderedDict
+    new_state_dict = OrderedDict()
+    for k, v in state_dict.items():
+        name = k[7:] if k.startswith('module.') else k
+        new_state_dict[name] = v
+
+    model.load_state_dict(new_state_dict)
+
+    # Move model to GPU if available
+    if args.gpu is not None:
+        torch.cuda.set_device(args.gpu)
+        model = model.cuda(args.gpu)
+    elif torch.cuda.is_available():
+        model = model.cuda()
+
+    model.eval()
+    print("Model loaded successfully!")
+
+    # Define test transforms (same as validation)
+    if args.advprop:
+        normalize = transforms.Lambda(lambda img: img * 2.0 - 1.0)
+    else:
+        normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                         std=[0.229, 0.224, 0.225])
+
+    test_transforms = transforms.Compose([
+        transforms.Resize(args.image_size, interpolation=PIL.Image.BICUBIC),
+        transforms.ToTensor(),
+        # normalize,  # Comment out if not used during training
+    ])
+
+    # Create test dataset
+    test_dataset = datasets.ImageFolder(args.test_data, test_transforms)
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=True
+    )
+
+    print(f"Test dataset loaded: {len(test_dataset)} images")
+
+    # Run inference
+    all_preds = []
+    all_targets = []
+    all_probs = []
+    correct_predictions = 0
+    total_predictions = 0
+
+    print("\nRunning inference on test images...")
+
+    with torch.no_grad():
+        for batch_idx, (images, targets) in enumerate(test_loader):
+            if args.gpu is not None:
+                images = images.cuda(args.gpu, non_blocking=True)
+                targets = targets.cuda(args.gpu, non_blocking=True)
+            elif torch.cuda.is_available():
+                images = images.cuda()
+                targets = targets.cuda()
+
+            # Forward pass
+            outputs = model(images)
+
+            # Get predictions
+            probabilities = torch.nn.functional.softmax(outputs, dim=1)
+            _, predicted = torch.max(outputs, 1)
+
+            # Store results
+            all_preds.extend(predicted.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+            all_probs.extend(probabilities.cpu().numpy())
+
+            # Calculate batch accuracy
+            correct_predictions += (predicted == targets).sum().item()
+            total_predictions += targets.size(0)
+
+            if batch_idx % 10 == 0:
+                print(f"Processed batch {batch_idx + 1}/{len(test_loader)}")
+
+    # Calculate overall accuracy
+    overall_accuracy = (correct_predictions / total_predictions) * 100
+
+    print("=" * 80)
+    print("SANITY TEST RESULTS")
+    print("=" * 80)
+    print(f"Overall Accuracy: {overall_accuracy:.2f}% ({correct_predictions}/{total_predictions})")
+
+    # Per-class accuracy
+    print("\nPer-class results:")
+    class_correct = [0] * num_classes
+    class_total = [0] * num_classes
+
+    for i in range(len(all_targets)):
+        true_class = all_targets[i]
+        pred_class = all_preds[i]
+
+        class_total[true_class] += 1
+        if true_class == pred_class:
+            class_correct[true_class] += 1
+
+    for i, class_name in enumerate(class_names):
+        if class_total[i] > 0:
+            accuracy = (class_correct[i] / class_total[i]) * 100
+            print(f"  {class_name}: {accuracy:.2f}% ({class_correct[i]}/{class_total[i]})")
+        else:
+            print(f"  {class_name}: No test samples")
+
+    # Detailed results for each image
+    print("\nDetailed predictions:")
+    print("-" * 60)
+
+    # Get image paths from dataset
+    image_paths = [test_dataset.samples[i][0] for i in range(len(test_dataset))]
+
+    for i, (true_idx, pred_idx, probs) in enumerate(zip(all_targets, all_preds, all_probs)):
+        true_class = class_names[true_idx]
+        pred_class = class_names[pred_idx]
+        confidence = probs[pred_idx] * 100
+        is_correct = "✓" if true_idx == pred_idx else "✗"
+
+        image_name = os.path.basename(image_paths[i])
+        print(f"{is_correct} {image_name:<25} True: {true_class:<10} Pred: {pred_class:<10} ({confidence:.1f}%)")
+
+    # Generate confusion matrix and classification report
+    print("\n" + "=" * 80)
+    print("CONFUSION MATRIX AND CLASSIFICATION REPORT")
+    print("=" * 80)
+
+    conf_matrix = metrics.confusion_matrix(all_targets, all_preds)
+    class_report = metrics.classification_report(all_targets, all_preds, target_names=class_names)
+
+    print("Confusion Matrix:")
+    print(conf_matrix)
+    print("\nClassification Report:")
+    print(class_report)
+
+    # Generate ROC curve if binary classification
+    if num_classes == 2:
+        try:
+            # For binary classification, use probabilities of positive class
+            positive_probs = [prob[1] for prob in all_probs]
+            roc_auc = metrics.roc_auc_score(all_targets, positive_probs)
+            false_positive_rate, true_positive_rate, _ = metrics.roc_curve(all_targets, positive_probs)
+
+            print(f"\nROC AUC Score: {roc_auc:.4f}")
+
+            # Save ROC plot if output path is available
+            if hasattr(args, 'session_name'):
+                output_path = os.path.join(MODEL_PATH, "training_history", args.session_name)
+                if os.path.exists(output_path):
+                    plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate, f"{args.session_name}_sanity_test")
+                    print(f"ROC curve saved to: {output_path}/{args.session_name}_sanity_test_roc.jpg")
+        except Exception as e:
+            print(f"Could not generate ROC curve: {e}")
+
+    print("=" * 80)
+    print("SANITY TEST COMPLETED")
+    print("=" * 80)
+
+    return True
 
 
 if __name__ == '__main__':
