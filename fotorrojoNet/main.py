@@ -33,6 +33,13 @@ import torch.optim.lr_scheduler  # Add this import
 
 from export_onnx import FotorrojoNet, export_onnx_model
 
+class RGBtoBGR(object):
+    """Convert RGB image tensor to BGR format to match OpenCV's default"""
+    def __call__(self, tensor):
+        # tensor is (C, H, W) format from ToTensor()
+        # swap channels: RGB -> BGR
+        return tensor[[2, 1, 0], :, :]
+
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('data', metavar='DIR',
                     help='path to dataset')
@@ -99,20 +106,20 @@ class FakeArgs:
     def __init__(self):
         # Training configuration
         self.short_name = "seeking_overfitting"
-        self.description = "The model still doesn't evaluate well in the rock. To know if it's a onnx->rknn conversion error I will overfit to 100acc"
+        self.description = "The model still doesn't evaluate well in the rock. To know if it's a onnx->rknn conversion error I will overfit to 100acc. Corrected normalization and BGR format."
         self.data = "C:/datasets/fotorrojo/dataset_margen_alrededor"
         self.arch = "fotorrojoNet"  # Changed for FotorrojoNet
         self.workers = 8
-        self.epochs = 30
+        self.epochs = 50
         self.start_epoch = 0
         self.batch_size = 128
         self.lr = 1e-2
         self.momentum = 0.9
-        self.weight_decay = 1e-3
+        self.weight_decay = 1e-4
         self.print_freq = 10
         self.resume = "" # "C:/git/EfficientNet-PyTorch/results/model_best_triple.pth.tar"
         self.evaluate = False
-        self.pretrained = True # This might not be applicable to FotorrojoNet unless you load weights
+        self.pretrained = False # This might not be applicable to FotorrojoNet unless you load weights
         self.world_size = -1
         self.rank = -1
         self.dist_url = "tcp://224.66.41.62:23456"
@@ -123,9 +130,10 @@ class FakeArgs:
         self.advprop = False
         self.multiprocessing_distributed = False
         self.early_stopping = True
+        self.early_stopping_patience = 3
 
         # Sanity test arguments
-        self.sanity_test = True
+        self.sanity_test = False
         self.test_data = "C:/datasets/fotorrojo/dataset_margen_alrededor/train"  # Will default to data/test if empty
         self.model_checkpoint = "C:/git/EfficientNet-PyTorch/fotorrojoNet/training_history/results/20250904_0918_model_best.pth.tar"  # Will auto-find latest if empty
 
@@ -197,7 +205,7 @@ def main():
         # Simply call main_worker function
         main_worker(args.gpu, ngpus_per_node, args)
 
-def early_stopping(val_losses, patience=15, min_delta=0.001):
+def early_stopping(val_losses, patience=15, min_delta=0.01):
     """
     Check if training should be stopped based on validation loss
     """
@@ -358,6 +366,7 @@ def main_worker(gpu, ngpus_per_node, args):
             # ], p=0.5),  # solo se aplica un 50% de las veces
             # transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
+            RGBtoBGR(),  # Convert RGB to BGR to match OpenCV format used in RKNN inference
             # transforms.ColorJitter(brightness=(0.8, 1.2),
             #                        contrast=(0.8, 1.2)
             #                        ),
@@ -379,6 +388,7 @@ def main_worker(gpu, ngpus_per_node, args):
         #transforms.CenterCrop(image_size),  # Not good for traffic lights
         transforms.Resize(image_size, interpolation=PIL.Image.BICUBIC), # Resize to FotorrojoNet's input dimensions
         transforms.ToTensor(),
+        RGBtoBGR(),  # Convert RGB to BGR to match OpenCV format used in RKNN inference
         # normalize,
     ])
     print('Using image size', image_size)
@@ -441,9 +451,9 @@ def main_worker(gpu, ngpus_per_node, args):
             }, is_best, args.session_name, output_path)
 
         # Check for early stopping (only after epoch 20 to allow initial learning)
-        if args.early_stopping and epoch > 20 and early_stopping(val_losses, patience=12):
+        if args.early_stopping and epoch > 20 and early_stopping(val_losses, patience=args.early_stopping_patience):
             logging.info(f"Early stopping triggered at epoch {epoch+1}")
-            logging.info(f"Validation loss hasn't improved for 12 epochs")
+            logging.info(f"Validation loss hasn't improved for {args.early_stopping_patience} epochs")
             break
 
         # Step the scheduler
@@ -772,6 +782,7 @@ def sanity_test(args):
     test_transforms = transforms.Compose([
         transforms.Resize(args.image_size, interpolation=PIL.Image.BICUBIC),
         transforms.ToTensor(),
+        RGBtoBGR(),  # Convert RGB to BGR to match OpenCV format used in RKNN inference
         # normalize,  # Comment out if not used during training
     ])
 

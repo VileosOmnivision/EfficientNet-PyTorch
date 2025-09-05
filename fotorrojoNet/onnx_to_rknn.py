@@ -93,9 +93,14 @@ def test_rknn_model(rknn_file_path, test_images_folder):
                 print(f"Error loading image: {img_path}")
                 continue
 
-            image = cv2.resize(image, (225, 75))  # Resize to model input size
-            #image = image.astype(np.float32)  # Ensure data type matches model
-            #image = image / 255.0  # Normalize if required
+            # Resize to model input size
+            image = cv2.resize(image, (225, 75))
+
+            # Convert to float32 and normalize to [0,1] to match PyTorch ToTensor()
+            image = image.astype(np.float32)
+            image = image / 255.0
+
+            # Add batch dimension
             image = np.expand_dims(image, axis=0)
 
             for i in range(1):
@@ -149,18 +154,19 @@ def convert_onnx_to_rknn(onnx_file_path, output_name=None, quantization=False, t
         if not os.path.exists(rknn_output):
             # Load ONNX model
             print("Loading ONNX model...")
-            ret = rknn.load_onnx(model=onnx_file_path)
-            if ret != 0:
-                print("Error loading ONNX model!")
-                return False
 
             # Initialize RKNN
             rknn = RKNN()
             rknn.config(
-                mean_values=[[123.675, 116.28, 103.53]],
-                std_values=[[58.395, 57.12, 57.375]],
+                mean_values=[[0.0, 0.0, 0.0]],
+                std_values=[[1.0, 1.0, 1.0]],
                 target_platform='rk3588'
             )
+            ret = rknn.load_onnx(model=onnx_file_path)
+
+            if ret != 0:
+                print("Error loading ONNX model!")
+                return False
 
             # Build the model
             print("Building RKNN model...")
@@ -194,7 +200,7 @@ def main():
     parser.add_argument('-o', '--output', help='Custom output name (without extension) for conversion')
     parser.add_argument('-q', '--quantization', action='store_true',
                        help='Enable quantization during conversion')
-    parser.add_argument('-t', '--test', nargs='?', const='/home/ubuntu/fotorrojo_ia/test_images',
+    parser.add_argument('-t', '--test', nargs='?', const='/home/ubuntu/fotorrojo_ia/test_images/basic/',
                        help='Test mode: run inference on RKNN model with JPG images from folder (default: /home/ubuntu/fotorrojo_ia/)')
 
     args = parser.parse_args()

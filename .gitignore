@@ -127,6 +127,7 @@ examples/imagenet/run.sh
 results/
 examples/morfeo/tests/*jpg
 *.onnx
+fotorrojoNet/training_history/*
 
 
 
