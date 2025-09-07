@@ -6,6 +6,7 @@ from datetime import datetime
 import glob
 import cv2
 import numpy as np
+import re
 
 from rknn.api import RKNN
 
@@ -13,6 +14,29 @@ def softmax(x):
     """Apply softmax function to input array"""
     exp_x = np.exp(x - np.max(x))  # Subtract max for numerical stability
     return exp_x / np.sum(exp_x)
+
+def extract_image_size_from_filename(filename):
+    """
+    Extract image dimensions from model filename.
+    Expected format: modelname_HEIGHTxWIDTH.extension
+    Examples:
+    - fotorrojoNet_75x225.onnx -> (225, 75)
+    - fotorrojoNet_20250905_1215_bilbao2_75x225.onnx -> (225, 75)
+
+    Returns:
+        tuple: (width, height) if found, None if not found
+    """
+    # Pattern to match dimensions in format: HEIGHTxWIDTH at the end before extension
+    # This captures digits_x_digits pattern
+    pattern = r'_(\d+)x(\d+)(?:\.[^.]+)?$'
+
+    match = re.search(pattern, filename)
+    if match:
+        height = int(match.group(1))
+        width = int(match.group(2))
+        return (width, height)  # cv2.resize expects (width, height)
+
+    return None
 
 def check_outputs(index, image_path):
     """Display softmax probabilities in a readable format"""
@@ -61,6 +85,25 @@ def test_rknn_model(rknn_file_path, test_images_folder):
         print(f"Error: RKNN file '{rknn_file_path}' not found!")
         return False
 
+    # Extract image size from model filename
+    model_filename = os.path.basename(rknn_file_path)
+    extracted_size = extract_image_size_from_filename(model_filename)
+
+    if extracted_size:
+        target_height, target_width = extracted_size
+        print(f"Extracted model input size from filename: {target_width}x{target_height}")
+    else:
+        print(f"Could not extract image size from filename: {model_filename}")
+        print("Please provide the expected input size for the model.")
+        try:
+            size_input = input("Enter image size as WIDTHxHEIGHT (e.g., 75x225): ")
+            width_str, height_str = size_input.split('x')
+            target_width, target_height = int(width_str), int(height_str)
+            print(f"Using provided size: {target_width}x{target_height}")
+        except (ValueError, KeyboardInterrupt):
+            print("Invalid input or operation cancelled. Using default size 75x225")
+            target_width, target_height = 75, 225
+
     # Get list of test images
     images_in_folder = get_jpg_images(test_images_folder)
     if not images_in_folder:
@@ -88,13 +131,22 @@ def test_rknn_model(rknn_file_path, test_images_folder):
 
         for img_path in images_in_folder:
             # Load and preprocess image in memory
-            image = cv2.imread(img_path)  # Replace with your own image source
+            image = cv2.imread(img_path)
             if image is None:
                 print(f"Error loading image: {img_path}")
                 continue
 
+            # Get original image dimensions
+            original_height, original_width = image.shape[:2]
+            original_size = (original_width, original_height)
+            target_size = (target_width, target_height)
+
+            # Check if resize is needed and print warning
+            if original_size != target_size:
+                print(f"WARNING: Resizing image {os.path.basename(img_path)} from {original_width}x{original_height} to {target_width}x{target_height}")
+
             # Resize to model input size
-            image = cv2.resize(image, (225, 75))
+            image = cv2.resize(image, (target_width, target_height))
 
             # Convert to float32 and normalize to [0,1] to match PyTorch ToTensor()
             image = image.astype(np.float32)

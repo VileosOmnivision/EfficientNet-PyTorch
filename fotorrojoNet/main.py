@@ -30,6 +30,7 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
 import torch.optim.lr_scheduler  # Add this import
+from torchvision.transforms import InterpolationMode
 
 from export_onnx import FotorrojoNet, export_onnx_model
 
@@ -41,8 +42,7 @@ class RGBtoBGR(object):
         return tensor[[2, 1, 0], :, :]
 
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('data', metavar='DIR',
-                    help='path to dataset')
+parser.add_argument('data', metavar='DIR', help='path to dataset')
 parser.add_argument('-a', '--arch', metavar='ARCH', default='resnet18',
                     help='model architecture (default: resnet18)')
 parser.add_argument('-j', '--workers', default=4, type=int, metavar='N',
@@ -105,19 +105,19 @@ MODEL_PATH = r"C:\git\EfficientNet-PyTorch\fotorrojoNet"
 class FakeArgs:
     def __init__(self):
         # Training configuration
-        self.short_name = "seeking_overfitting"
-        self.description = "The model still doesn't evaluate well in the rock. To know if it's a onnx->rknn conversion error I will overfit to 100acc. Corrected normalization and BGR format."
+        self.short_name = "bilbao2"
+        self.description = "Slowed down LR and its decay. Increased batch size and epochs. Weighted classes"
         self.data = "C:/datasets/fotorrojo/dataset_margen_alrededor"
-        self.arch = "fotorrojoNet"  # Changed for FotorrojoNet
+        self.arch = "fotorrojoNet"
         self.workers = 8
-        self.epochs = 50
+        self.epochs = 1
         self.start_epoch = 0
         self.batch_size = 128
-        self.lr = 1e-2
-        self.momentum = 0.9
-        self.weight_decay = 1e-4
+        self.lr = 5e-3
+        self.momentum = 0.7
+        self.weight_decay = 5e-4
         self.print_freq = 10
-        self.resume = "" # "C:/git/EfficientNet-PyTorch/results/model_best_triple.pth.tar"
+        self.resume = "last"
         self.evaluate = False
         self.pretrained = False # This might not be applicable to FotorrojoNet unless you load weights
         self.world_size = -1
@@ -126,18 +126,23 @@ class FakeArgs:
         self.dist_backend = "nccl"
         self.seed = None
         self.gpu = 0
-        self.image_size = (75, 225) # Changed for FotorrojoNet input HxW
+        self.image_size = (75, 225)
         self.advprop = False
         self.multiprocessing_distributed = False
-        self.early_stopping = True
-        self.early_stopping_patience = 3
+        self.early_stopping = False
+        self.early_stopping_patience = 10
+
+        # Learning rate scheduler parameters
+        self.scheduler_factor = 0.7      # Factor to reduce LR by
+        self.scheduler_patience = 10     # Epochs to wait before reducing LR
+        self.scheduler_mode = 'min'      # Monitor validation loss decrease
 
         # Sanity test arguments
-        self.sanity_test = False
-        self.test_data = "C:/datasets/fotorrojo/dataset_margen_alrededor/train"  # Will default to data/test if empty
-        self.model_checkpoint = "C:/git/EfficientNet-PyTorch/fotorrojoNet/training_history/results/20250904_0918_model_best.pth.tar"  # Will auto-find latest if empty
+        self.sanity_test = True
+        self.test_data = r"C:\datasets\fotorrojo\dataset_together_sep25\val"  # Will default to data/test if empty
+        self.sanity_model_weights = r"C:\git\EfficientNet-PyTorch\fotorrojoNet\training_history\20250905_1803_bilbao2\20250905_1803_bilbao2_model_best.pth.tar"  # Will auto-find latest if empty
 
-def main():
+def main(other_dataset=None):
     # Create training session name with datetime
     session_name = datetime.now().strftime("%Y%m%d_%H%M")
 
@@ -145,9 +150,10 @@ def main():
         args = parser.parse_args()
     except:
         # If no arguments are passed, use hardcoded defaults
-        warnings.warn("No command line arguments detected. Using hardcoded defaults for debugging.")
+        print("No command line arguments detected. Using hardcoded defaults for debugging.")
         args = FakeArgs()
-
+        if other_dataset is not None:
+            args.data = other_dataset
     # Add training session name to args for use in main_worker
     args.session_name = f"{session_name}_{args.short_name}"
 
@@ -155,18 +161,25 @@ def main():
     if args.sanity_test:
         # Set default values if using FakeArgs
         if not args.test_data:
-            args.test_data = os.path.join(args.data, 'test')
-        if not args.model_checkpoint:
+            args.test_data = os.path.join(args.data, 'val')
+        if not args.sanity_model_weights:
             # Try to find the most recent model checkpoint
             training_history_path = os.path.join(MODEL_PATH, "training_history")
             if os.path.exists(training_history_path):
                 # Find the most recent session folder
                 session_folders = [d for d in os.listdir(training_history_path)
-                                 if os.path.isdir(os.path.join(training_history_path, d))]
+                                    if os.path.isdir(os.path.join(training_history_path, d))]
                 if session_folders:
-                    latest_session = sorted(session_folders)[-1]
-                    args.model_checkpoint = os.path.join(training_history_path, latest_session, f"{latest_session}_model_best.pth.tar")
-                    print(f"Using latest model checkpoint: {args.model_checkpoint}")
+                    # Sort session folders by modification time (most recent last)
+                    session_folders.sort(key=lambda d: os.path.getmtime(os.path.join(training_history_path, d)))
+                    print(session_folders)
+                    latest_session = session_folders[-1]
+                    args.sanity_model_weights = os.path.join(training_history_path, latest_session, f"{latest_session}_model_best.pth.tar")
+                    print(f"Using latest model checkpoint: {args.sanity_model_weights}")
+                else:
+                    print(f"No session folders found in {training_history_path}, cannot run sanity test without model weights")
+            else:
+                print(f"No training history found at {training_history_path}, cannot run sanity test without model weights")
 
         # Run sanity test and exit
         success = sanity_test(args)
@@ -205,11 +218,12 @@ def main():
         # Simply call main_worker function
         main_worker(args.gpu, ngpus_per_node, args)
 
-def early_stopping(val_losses, patience=15, min_delta=0.01):
+def early_stopping(val_losses, patience=15, min_delta=0.001):
     """
     Check if training should be stopped based on validation loss
     """
     if len(val_losses) < patience + 1:
+        print("Early stopping check: not enough data")
         return False
 
     # Check if validation loss has not improved for 'patience' epochs
@@ -219,6 +233,7 @@ def early_stopping(val_losses, patience=15, min_delta=0.01):
 
     if current_loss > best_loss - min_delta:
         return True
+    print(f"Early stopping check: current_loss={current_loss:.4f}, best_loss={best_loss:.4f}")
     return False
 
 def main_worker(gpu, ngpus_per_node, args):
@@ -245,7 +260,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # Create CSV file for structured logging
     with open(csv_log_file, 'w', newline='') as f:
-        f.write("epoch,train_loss,train_accuracy,val_loss,val_accuracy,learning_rate,is_best\n")
+        f.write("epoch,train_loss,train_accuracy,val_loss,val_accuracy,val_f1_score,learning_rate,is_best\n")
 
     logging.info("=" * 80)
     logging.info("TRAINING SESSION STARTED")
@@ -309,18 +324,36 @@ def main_worker(gpu, ngpus_per_node, args):
         # Removed AlexNet/VGG specific logic, direct DataParallel for FotorrojoNet
         model = torch.nn.DataParallel(model).cuda()
 
-    # define loss function (criterion) and optimizer
+    # define loss function (criterion) and optimizer (will be updated with class weights later)
     criterion = nn.CrossEntropyLoss().cuda(args.gpu)
 
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
                                 weight_decay=args.weight_decay)
 
-    # Add the learning rate scheduler
-    # Cada 'step_size' epochs, el learning rate se multiplica por 'gamma'
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5, verbose=True)
+    # Add the learning rate scheduler - Using configurable parameters
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode=args.scheduler_mode,
+        factor=args.scheduler_factor,
+        patience=args.scheduler_patience,
+        verbose=True
+    )
 
     # optionally resume from a checkpoint
+    if args.resume == 'last':
+        # Try to find the most recent model checkpoint
+        training_history_path = os.path.join(MODEL_PATH, "training_history")
+        if os.path.exists(training_history_path):
+            # Find the most recent session folder
+            session_folders = [d for d in os.listdir(training_history_path)
+                                if os.path.isdir(os.path.join(training_history_path, d))]
+            if session_folders:
+                # Sort session folders by modification time (most recent last)
+                session_folders.sort(key=lambda d: os.path.getmtime(os.path.join(training_history_path, d)))
+                latest_session = session_folders[-2]
+                args.resume = os.path.join(training_history_path, latest_session, f"{latest_session}_checkpoint.pth.tar")
+                print(f"Using latest model checkpoint: {args.resume}")
     if args.resume:
         if os.path.isfile(args.resume):
             print("=> loading checkpoint '{}'".format(args.resume))
@@ -359,11 +392,11 @@ def main_worker(gpu, ngpus_per_node, args):
     train_dataset = datasets.ImageFolder(
         traindir,
         transforms.Compose([
-            transforms.Resize(image_size, interpolation=PIL.Image.BICUBIC), # Resize to FotorrojoNet's input dimensions
-            # transforms.RandomApply([
-            #     transforms.RandomCrop((50, 150), padding=0, pad_if_needed=False),  # random position crop to 50x150
-            #     transforms.Resize(image_size, interpolation=PIL.Image.BICUBIC), # Resize to FotorrojoNet's input dimensions
-            # ], p=0.5),  # solo se aplica un 50% de las veces
+            transforms.Resize(image_size, interpolation=InterpolationMode.BICUBIC), # Fixed interpolation warning
+            transforms.RandomApply([
+                transforms.RandomCrop((50, 150), padding=0, pad_if_needed=False),  # random position crop to 50x150
+                transforms.Resize(image_size, interpolation=InterpolationMode.BICUBIC),
+            ], p=0.3),
             # transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             RGBtoBGR(),  # Convert RGB to BGR to match OpenCV format used in RKNN inference
@@ -384,9 +417,7 @@ def main_worker(gpu, ngpus_per_node, args):
         num_workers=args.workers, pin_memory=True, sampler=train_sampler)
 
     val_transforms = transforms.Compose([
-        #transforms.Resize(image_size, interpolation=PIL.Image.BICUBIC),  # Not good for traffic lights
-        #transforms.CenterCrop(image_size),  # Not good for traffic lights
-        transforms.Resize(image_size, interpolation=PIL.Image.BICUBIC), # Resize to FotorrojoNet's input dimensions
+        transforms.Resize(image_size, interpolation=InterpolationMode.BICUBIC), # Fixed interpolation warning
         transforms.ToTensor(),
         RGBtoBGR(),  # Convert RGB to BGR to match OpenCV format used in RKNN inference
         # normalize,
@@ -398,6 +429,25 @@ def main_worker(gpu, ngpus_per_node, args):
         batch_size=args.batch_size, shuffle=False,
         num_workers=args.workers, pin_memory=True)
 
+    # Calculate class weights for imbalanced dataset after data loaders are created
+    print("Calculating class distribution for balanced training...")
+    class_counts = torch.zeros(num_classes)
+    for _, target in train_loader:
+        for t in target:
+            class_counts[t] += 1
+
+    # Calculate inverse frequency weights
+    total_samples = class_counts.sum()
+    class_weights = total_samples / (num_classes * class_counts)
+    class_weights = class_weights.cuda(args.gpu) if args.gpu is not None else class_weights
+
+    print(f"Number of classes detected: {num_classes}")
+    print(f"Class distribution: {class_counts}")
+    print(f"Class weights: {class_weights}")
+
+    # Update criterion with class weights
+    criterion = nn.CrossEntropyLoss(weight=class_weights).cuda(args.gpu)
+
     if args.evaluate:
         res = validate(val_loader, model, criterion, args, output_path)
         with open(os.path.join(output_path, 'res.txt'), 'w') as f:
@@ -406,6 +456,15 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # Initialize lists for early stopping
     val_losses = []
+
+    # Initialize lists for storing training metrics for plotting
+    epoch_numbers = []
+    train_losses = []
+    train_accuracies = []
+    val_losses_plot = []
+    val_accuracies = []
+    val_f1_scores = []
+    learning_rates = []
 
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
@@ -419,10 +478,19 @@ def main_worker(gpu, ngpus_per_node, args):
         train_loss, train_acc = train(train_loader, model, criterion, optimizer, epoch, args)
 
         # evaluate on validation set
-        val_loss, val_acc = validate(val_loader, model, criterion, args, output_path)
+        val_loss, val_acc, val_f1 = validate(val_loader, model, criterion, args, output_path)
 
         # Add to early stopping monitoring
         val_losses.append(val_loss)
+
+        # Store metrics for plotting
+        epoch_numbers.append(epoch + 1)
+        train_losses.append(float(train_loss))
+        train_accuracies.append(float(train_acc))
+        val_losses_plot.append(float(val_loss))
+        val_accuracies.append(float(val_acc))
+        val_f1_scores.append(float(val_f1))
+        learning_rates.append(float(current_lr))
 
         # Log epoch results
         logging.info(f"Epoch {epoch + 1}/{args.epochs} completed:")
@@ -436,7 +504,7 @@ def main_worker(gpu, ngpus_per_node, args):
 
         # Save epoch metrics to CSV file
         with open(csv_log_file, 'a', newline='') as f:
-            f.write(f"{epoch + 1},{train_loss:.6f},{train_acc:.2f},{val_loss:.6f},{val_acc:.2f},{current_lr:.6f},{is_best}\n")
+            f.write(f"{epoch + 1},{train_loss:.6f},{train_acc:.2f},{val_loss:.6f},{val_acc:.2f},{val_f1:.4f},{current_lr:.6f},{is_best}\n")
 
         # Save checkpoint every 10 epochs
         if (epoch % 10 == 0 or is_best) and epoch > 0:
@@ -450,16 +518,60 @@ def main_worker(gpu, ngpus_per_node, args):
                 'optimizer' : optimizer.state_dict(),
             }, is_best, args.session_name, output_path)
 
+        # Export ONNX model every 50 epochs
+        if epoch % 50 == 0 and epoch > 0:
+            print(f"Exporting ONNX model at epoch {epoch}")
+            logging.info(f"Exporting ONNX model at epoch {epoch + 1}")
+
+            # Create checkpoint filename for current epoch
+            epoch_checkpoint_name = f"{args.session_name}_checkpoint.pth.tar"
+            epoch_checkpoint_path = os.path.join(output_path, epoch_checkpoint_name)
+
+            # Export ONNX with epoch suffix
+            success = export_onnx_model(
+                checkpoint_path=epoch_checkpoint_path,
+                output_dir=output_path,
+                session_name=f"{args.session_name}_epoch_{epoch + 1}",
+                num_classes=len(os.listdir(os.path.join(args.data, 'train'))),
+                input_size=args.image_size
+            )
+
+            if success:
+                logging.info(f"ONNX export for epoch {epoch + 1} completed successfully!")
+            else:
+                logging.info(f"ONNX export for epoch {epoch + 1} failed!")
+
         # Check for early stopping (only after epoch 20 to allow initial learning)
         if args.early_stopping and epoch > 20 and early_stopping(val_losses, patience=args.early_stopping_patience):
             logging.info(f"Early stopping triggered at epoch {epoch+1}")
             logging.info(f"Validation loss hasn't improved for {args.early_stopping_patience} epochs")
             break
 
-        # Step the scheduler
-        scheduler.step()
+        # Step the scheduler with validation loss (required for ReduceLROnPlateau)
+        scheduler.step(val_loss)
 
     logging.info(f"Training completed! Final best accuracy: {best_acc1:.2f}%")
+
+    # Plot training metrics evolution
+    logging.info("=" * 80)
+    logging.info("GENERATING TRAINING METRICS PLOTS")
+    logging.info("=" * 80)
+
+    if epoch_numbers:  # Only plot if we have data
+        plot_training_metrics(
+            epoch_numbers=epoch_numbers,
+            train_losses=train_losses,
+            train_accuracies=train_accuracies,
+            val_losses=val_losses_plot,
+            val_accuracies=val_accuracies,
+            val_f1_scores=val_f1_scores,
+            learning_rates=learning_rates,
+            output_path=output_path,
+            session_name=args.session_name
+        )
+        logging.info("Training metrics plots generated successfully!")
+    else:
+        logging.info("No training data to plot (training may have been skipped)")
 
     # Export trained model to ONNX format
     logging.info("=" * 80)
@@ -515,6 +627,13 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
         # compute output
         output = model(images)
         loss = criterion(output, target)
+
+        # Debug: Print some output statistics
+        if i == 0:  # Only print for first batch to avoid spam
+            print(f"Debug - Output shape: {output.shape}")
+            print(f"Debug - Output sample: {output[0].detach().cpu()}")
+            print(f"Debug - Target sample: {target[:5].cpu()}")
+            print(f"Debug - Loss: {loss.item():.4f}")
 
         # measure accuracy and record loss
         #acc1, acc5 = accuracy(output, target, topk=(1, 5))
@@ -587,10 +706,14 @@ def validate(val_loader, model, criterion, args, output_path):
         # TODO: this should also be done with the ProgressMeter
         print(' * Acc@1 {top1.avg:.3f}'.format(top1=top1))
 
+    # Calculate F1-score with zero_division parameter to avoid warnings
+    f1 = metrics.f1_score(all_targets, all_preds, average='weighted', zero_division=0)
+    print(f' * F1-Score {f1:.3f}')
+
     statistics_calc(output_path, all_preds, all_targets, args.session_name)
 
-    # Return loss and accuracy for logging
-    return losses.avg, top1.avg
+    # Return loss, accuracy, and F1-score for logging
+    return losses.avg, top1.avg, f1
 
 def save_checkpoint(state, is_best, session_name, output_path, filename='checkpoint.pth.tar'):
     # Use training session name for checkpoint files
@@ -669,6 +792,67 @@ def accuracy(output, target, topk=(1,)):
             res = res[0]
         return res
 
+def plot_training_metrics(epoch_numbers, train_losses, train_accuracies, val_losses, val_accuracies, val_f1_scores, learning_rates, output_path, session_name):
+    """Plot training metrics evolution over epochs"""
+
+    # Convert all inputs to numpy arrays to ensure proper data types
+    epoch_numbers = np.array(epoch_numbers, dtype=float)
+    train_losses = np.array(train_losses, dtype=float)
+    train_accuracies = np.array(train_accuracies, dtype=float)
+    val_losses = np.array(val_losses, dtype=float)
+    val_accuracies = np.array(val_accuracies, dtype=float)
+    val_f1_scores = np.array(val_f1_scores, dtype=float)
+    learning_rates = np.array(learning_rates, dtype=float)
+
+    # Create a figure with subplots
+    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
+    fig.suptitle(f'Training Metrics Evolution - {session_name}', fontsize=16)
+
+    # Plot 1: Loss curves
+    ax1.plot(epoch_numbers, train_losses, 'b-', label='Training Loss', linewidth=2)
+    ax1.plot(epoch_numbers, val_losses, 'r-', label='Validation Loss', linewidth=2)
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.set_title('Loss Evolution')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+
+    # Plot 2: Accuracy curves
+    ax2.plot(epoch_numbers, train_accuracies, 'b-', label='Training Accuracy', linewidth=2)
+    ax2.plot(epoch_numbers, val_accuracies, 'r-', label='Validation Accuracy', linewidth=2)
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Accuracy (%)')
+    ax2.set_title('Accuracy Evolution')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+
+    # Plot 3: Learning Rate
+    ax3.plot(epoch_numbers, learning_rates, 'g-', label='Learning Rate', linewidth=2)
+    ax3.set_xlabel('Epoch')
+    ax3.set_ylabel('Learning Rate')
+    ax3.set_title('Learning Rate Schedule')
+    ax3.set_yscale('log')  # Log scale for learning rate
+    ax3.legend()
+    ax3.grid(True, alpha=0.3)
+
+    # Plot 4: F1-Score evolution
+    ax4.plot(epoch_numbers, val_f1_scores, 'purple', label='Validation F1-Score', linewidth=2)
+    ax4.set_xlabel('Epoch')
+    ax4.set_ylabel('F1-Score')
+    ax4.set_title('F1-Score Evolution')
+    ax4.set_ylim([0, 1])  # F1-score ranges from 0 to 1
+    ax4.legend()
+    ax4.grid(True, alpha=0.3)
+
+    # Adjust layout and save
+    plt.tight_layout()
+    plot_path = os.path.join(output_path, f"{session_name}_training_metrics.png")
+    plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+    plt.close()  # Close to free memory
+
+    print(f"Training metrics plot saved to: {plot_path}")
+    return plot_path
+
 def plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate, session_name):
     plt.figure(figsize=(10, 8), dpi=100)
     plt.axis('scaled')
@@ -691,10 +875,19 @@ def statistics_calc(output_path, y_pred, y_true, session_name):
     print("Confusion Matrix:\n", conf_mat)
     print(class_report)
 
-    # ROC & AUC
-    roc_auc = metrics.roc_auc_score(y_true, y_pred)
-    false_positive_rate, true_positive_rate, thresolds = metrics.roc_curve(y_true, y_pred)
-    plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate, session_name)
+    # ROC & AUC - Handle both binary and multi-class scenarios
+    num_classes = len(np.unique(y_true))
+
+    if num_classes == 2:
+        # Binary classification - original behavior
+        roc_auc = metrics.roc_auc_score(y_true, y_pred)
+        false_positive_rate, true_positive_rate, thresholds = metrics.roc_curve(y_true, y_pred)
+        plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate, session_name)
+    else:
+        # Multi-class classification - use One-vs-Rest approach
+        print(f"Multi-class classification detected ({num_classes} classes)")
+        print("ROC AUC calculation requires probability scores for multi-class, skipping ROC plot")
+        print("Use classification report above for detailed metrics")
 
 def sanity_test(args):
     """
@@ -736,16 +929,16 @@ def sanity_test(args):
     model = FotorrojoNet(num_classes=num_classes, input_size=args.image_size)
 
     # Load checkpoint
-    if not args.model_checkpoint:
+    if not args.sanity_model_weights:
         print("Error: Please specify --model-checkpoint path for sanity testing")
         return False
 
-    if not os.path.exists(args.model_checkpoint):
-        print(f"Error: Model checkpoint '{args.model_checkpoint}' not found!")
+    if not os.path.exists(args.sanity_model_weights):
+        print(f"Error: Model checkpoint '{args.sanity_model_weights}' not found!")
         return False
 
-    print(f"Loading model checkpoint: {args.model_checkpoint}")
-    checkpoint = torch.load(args.model_checkpoint, map_location='cpu')
+    print(f"Loading model checkpoint: {args.sanity_model_weights}")
+    checkpoint = torch.load(args.sanity_model_weights, map_location='cpu')
 
     # Handle different checkpoint formats
     if 'state_dict' in checkpoint:
@@ -780,7 +973,7 @@ def sanity_test(args):
                                          std=[0.229, 0.224, 0.225])
 
     test_transforms = transforms.Compose([
-        transforms.Resize(args.image_size, interpolation=PIL.Image.BICUBIC),
+        transforms.Resize(args.image_size, interpolation=InterpolationMode.BICUBIC), # Fixed interpolation warning
         transforms.ToTensor(),
         RGBtoBGR(),  # Convert RGB to BGR to match OpenCV format used in RKNN inference
         # normalize,  # Comment out if not used during training
@@ -920,3 +1113,4 @@ def sanity_test(args):
 
 if __name__ == '__main__':
     main()
+    # main("C:/datasets/fotorrojo/dataset_together_sep25")
