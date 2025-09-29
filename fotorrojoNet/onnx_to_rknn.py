@@ -9,6 +9,7 @@ import numpy as np
 import re
 
 from rknn.api import RKNN
+import random
 
 def softmax(x):
     """Apply softmax function to input array"""
@@ -40,20 +41,20 @@ def extract_image_size_from_filename(filename):
 
 def check_outputs(index, image_path):
     """Display softmax probabilities in a readable format"""
-    print(f"index: {index}")
+    print(f"index: {index} -- path: {image_path} -- bool: {'norojo' in image_path}")
     if 'norojo' in image_path:
         if index[0] > index[1]:
-            print("CORRECTO! No es rojo")
+            print("Fallo! No es rojo")
             return True
         else:
-            print("Fallo! No es norojo")
+            print("CORRECTO! Es norojo")
             return False
     else:
         if index[0] < index[1]:
-            print("CORRECTO! Es rojo")
+            print("CORRECTO! Es norojo")
             return True
         else:
-            print("Fallo! Es norojo")
+            print("Fallo! No es rojo")
             return False
 
 def get_jpg_images(folder_path):
@@ -96,12 +97,12 @@ def test_rknn_model(rknn_file_path, test_images_folder):
         print(f"Could not extract image size from filename: {model_filename}")
         print("Please provide the expected input size for the model.")
         try:
-            size_input = input("Enter image size as WIDTHxHEIGHT (e.g., 75x225): ")
+            size_input = input("Enter image size as WIDTHxHEIGHT (e.g., 225x75): ")
             width_str, height_str = size_input.split('x')
             target_width, target_height = int(width_str), int(height_str)
             print(f"Using provided size: {target_width}x{target_height}")
         except (ValueError, KeyboardInterrupt):
-            print("Invalid input or operation cancelled. Using default size 75x225")
+            print("Invalid input or operation cancelled. Using default size 225x75")
             target_width, target_height = 75, 225
 
     # Get list of test images
@@ -128,6 +129,10 @@ def test_rknn_model(rknn_file_path, test_images_folder):
 
         print("Starting inference tests...")
         right_counter = 0
+        near_misses = 0  # For predictions that were almost correct
+        total_images = len(images_in_folder)
+        wrong_examples = []
+        inference_times = []
 
         for img_path in images_in_folder:
             # Load and preprocess image in memory
@@ -142,30 +147,74 @@ def test_rknn_model(rknn_file_path, test_images_folder):
             target_size = (target_width, target_height)
 
             # Check if resize is needed and print warning
-            if original_size != target_size:
-                print(f"WARNING: Resizing image {os.path.basename(img_path)} from {original_width}x{original_height} to {target_width}x{target_height}")
+            # if original_size != target_size:
+            #     print(f"WARNING: Resizing image {os.path.basename(img_path)} from {original_width}x{original_height} to {target_width}x{target_height}")
 
-            # Resize to model input size
-            image = cv2.resize(image, (target_width, target_height))
+            # Resize to model input size using BICUBIC interpolation to match training
+            image = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_CUBIC)
 
             # Convert to float32 and normalize to [0,1] to match PyTorch ToTensor()
             image = image.astype(np.float32)
             image = image / 255.0
 
-            # Add batch dimension
+            # Add batch dimension to get the RKNN NHWC format: batch, height, width, channels
             image = np.expand_dims(image, axis=0)
 
-            for i in range(1):
-                start_time = time.perf_counter()
-                outputs = rknn.inference(inputs=[image])
-                end_time = time.perf_counter()
-                inference_time = end_time - start_time
-                print(f"Inference {i+1}: {outputs} ({inference_time*1000:.2f}ms) image {img_path}")
-                correct = check_outputs(softmax(np.array(outputs[0][0])), img_path)
-                if correct:
-                    right_counter += 1
+            # Run inference
+            start_time = time.perf_counter()
+            outputs = rknn.inference(inputs=[image])
+            end_time = time.perf_counter()
+            inference_time = end_time - start_time
+            inference_times.append(inference_time)
 
-        print(f"Total correct predictions: {right_counter}/{len(images_in_folder)} ({right_counter/len(images_in_folder)*100:.2f}%)")
+            # Get detailed prediction analysis
+            pred_scores = softmax(np.array(outputs[0][0]))
+            pred_class = np.argmax(pred_scores)
+            confidence = pred_scores[pred_class]
+
+            # Determine expected class based on filename
+            expected_class = 1 if 'rojo' in img_path and 'norojo' not in img_path else 0
+            is_correct = (pred_class == expected_class)
+
+            if is_correct:
+                right_counter += 1
+                result = "CORRECT"
+            else:
+                # Check if it was a near miss (confidence was close)
+                if len(pred_scores) >= 2 and abs(pred_scores[0] - pred_scores[1]) < 0.2:
+                    near_misses += 1
+                    result = "NEAR MISS"
+                else:
+                    result = "WRONG"
+                    wrong_examples.append((img_path, pred_class, confidence))
+
+            # print(f"{result}: {os.path.basename(img_path)} - Predicted: {pred_class} ({confidence:.3f}), Expected: {expected_class}, Scores: {pred_scores} ({inference_time*1000:.2f}ms)")
+
+        wrong_pred_folder = os.path.join(test_images_folder, '../wrong_predictions')
+        print(f"\nSaving some wrong predictions in 'wrong_predictions' folder...")
+        random.shuffle(wrong_examples)
+        number_examples = min(20, len(wrong_examples))
+        for wrong_img, pred_cls, conf in wrong_examples[:number_examples]:
+            if not os.path.exists(wrong_pred_folder):
+                os.makedirs(wrong_pred_folder)
+            base_name = os.path.basename(wrong_img)
+            save_path = os.path.join(wrong_pred_folder, f"pred{pred_cls}_conf{int(conf*100):02d}_{base_name}")
+            image = cv2.imwrite(save_path, cv2.imread(wrong_img))
+
+        # Calculate statistics
+        avg_inference_time = np.mean(inference_times) * 1000  # Convert to ms
+        std_inference_time = np.std(inference_times) * 1000
+
+        print(f"\n" + "="*60)
+        print(f"RKNN MODEL RESULTS SUMMARY:")
+        print(f"- Model: {os.path.basename(rknn_file_path)}")
+        print(f"- Total images: {total_images}")
+        print(f"- Correct predictions: {right_counter}")
+        print(f"- Accuracy: {right_counter/total_images*100:.2f}%")
+        print(f"- Near misses: {near_misses} ({near_misses/total_images*100:.2f}%)")
+        print(f"- Combined (correct + near miss): {(right_counter + near_misses)/total_images*100:.2f}%")
+        print(f"- Average inference time: {avg_inference_time:.2f} ± {std_inference_time:.2f} ms")
+        print(f"="*60)
 
         return True
 
@@ -207,12 +256,14 @@ def convert_onnx_to_rknn(onnx_file_path, output_name=None, quantization=False, t
             # Load ONNX model
             print("Loading ONNX model...")
 
-            # Initialize RKNN
+            # Initialize RKNN with improved configuration for better accuracy
             rknn = RKNN()
             rknn.config(
                 mean_values=[[0.0, 0.0, 0.0]],
                 std_values=[[1.0, 1.0, 1.0]],
-                target_platform='rk3588'
+                target_platform='rk3588',
+                optimization_level=1,  # Lower optimization for better accuracy
+                quantized_algorithm='normal',  # Specify algorithm explicitly
             )
             ret = rknn.load_onnx(model=onnx_file_path)
 
@@ -257,6 +308,10 @@ def main():
 
     args = parser.parse_args()
 
+    # Just testing an already created model.
+    # Usage (with venv_rknn active): 'python3 onnx_to_rknn.py mymodel.rknn -t'
+    # test_rknn_model(args.input_file, args.test)
+
     convert_onnx_to_rknn(
         onnx_file_path=args.input_file,
         output_name=args.output,
@@ -266,3 +321,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

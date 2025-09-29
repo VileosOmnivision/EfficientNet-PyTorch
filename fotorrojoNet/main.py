@@ -106,18 +106,18 @@ class FakeArgs:
     def __init__(self):
         # Training configuration
         self.short_name = "bilbao2"
-        self.description = "Slowed down LR and its decay. Increased batch size and epochs. Weighted classes"
+        self.description = "Intercubic resize. 2321 images per class."
         self.data = "C:/datasets/fotorrojo/dataset_margen_alrededor"
         self.arch = "fotorrojoNet"
         self.workers = 8
-        self.epochs = 1
+        self.epochs = 45
         self.start_epoch = 0
         self.batch_size = 128
-        self.lr = 5e-3
+        self.lr = 3e-3
         self.momentum = 0.7
         self.weight_decay = 5e-4
         self.print_freq = 10
-        self.resume = "last"
+        self.resume = ""
         self.evaluate = False
         self.pretrained = False # This might not be applicable to FotorrojoNet unless you load weights
         self.world_size = -1
@@ -139,8 +139,8 @@ class FakeArgs:
 
         # Sanity test arguments
         self.sanity_test = True
-        self.test_data = r"C:\datasets\fotorrojo\dataset_together_sep25\val"  # Will default to data/test if empty
-        self.sanity_model_weights = r"C:\git\EfficientNet-PyTorch\fotorrojoNet\training_history\20250905_1803_bilbao2\20250905_1803_bilbao2_model_best.pth.tar"  # Will auto-find latest if empty
+        self.test_data = r"C:\datasets\fotorrojo\ayto_Madrid_dic2024"  # Will default to data/test if empty
+        self.sanity_model_weights = r""  # Will auto-find latest if empty
 
 def main(other_dataset=None):
     # Create training session name with datetime
@@ -392,11 +392,11 @@ def main_worker(gpu, ngpus_per_node, args):
     train_dataset = datasets.ImageFolder(
         traindir,
         transforms.Compose([
-            transforms.Resize(image_size, interpolation=InterpolationMode.BICUBIC), # Fixed interpolation warning
+            transforms.Resize(image_size, interpolation=InterpolationMode.BICUBIC),
             transforms.RandomApply([
-                transforms.RandomCrop((50, 150), padding=0, pad_if_needed=False),  # random position crop to 50x150
+                transforms.RandomCrop((60, 180), padding=0, pad_if_needed=False),
                 transforms.Resize(image_size, interpolation=InterpolationMode.BICUBIC),
-            ], p=0.3),
+            ], p=0.4),
             # transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             RGBtoBGR(),  # Convert RGB to BGR to match OpenCV format used in RKNN inference
@@ -518,8 +518,8 @@ def main_worker(gpu, ngpus_per_node, args):
                 'optimizer' : optimizer.state_dict(),
             }, is_best, args.session_name, output_path)
 
-        # Export ONNX model every 50 epochs
-        if epoch % 50 == 0 and epoch > 0:
+        # Export ONNX model every 15 epochs
+        if epoch % 15 == 0 and epoch > 0:
             print(f"Exporting ONNX model at epoch {epoch}")
             logging.info(f"Exporting ONNX model at epoch {epoch + 1}")
 
