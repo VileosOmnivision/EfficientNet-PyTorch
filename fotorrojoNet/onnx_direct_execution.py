@@ -9,8 +9,7 @@ import numpy as np
 import re
 import math
 from collections import defaultdict
-
-from rknn.api import RKNN
+import onnxruntime as ort
 import random
 
 def softmax(x):
@@ -195,24 +194,6 @@ def extract_image_size_from_filename(filename):
 
     return None
 
-def check_outputs(index, image_path):
-    """Display softmax probabilities in a readable format"""
-    print(f"index: {index} -- path: {image_path} -- bool: {'norojo' in image_path}")
-    if 'norojo' in image_path:
-        if index[0] > index[1]:
-            print("Fallo! No es rojo")
-            return True
-        else:
-            print("CORRECTO! Es norojo")
-            return False
-    else:
-        if index[0] < index[1]:
-            print("CORRECTO! Es norojo")
-            return True
-        else:
-            print("Fallo! No es rojo")
-            return False
-
 def get_jpg_images(folder_path):
     """Get list of JPG images in a folder and its subfolders (recursive)"""
     if not os.path.exists(folder_path):
@@ -236,18 +217,18 @@ def get_jpg_images(folder_path):
 
     return sorted(images)
 
-def test_rknn_model(rknn_file_path, test_images_folder):
-    """Test RKNN model with images from a folder"""
-    if not os.path.exists(rknn_file_path):
-        print(f"Error: RKNN file '{rknn_file_path}' not found!")
+def test_onnx_model(onnx_file_path, test_images_folder):
+    """Test ONNX model with images from a folder using ONNX Runtime"""
+    if not os.path.exists(onnx_file_path):
+        print(f"Error: ONNX file '{onnx_file_path}' not found!")
         return False
 
     # Extract image size from model filename
-    model_filename = os.path.basename(rknn_file_path)
+    model_filename = os.path.basename(onnx_file_path)
     extracted_size = extract_image_size_from_filename(model_filename)
 
     if extracted_size:
-        target_height, target_width = extracted_size
+        target_width, target_height = extracted_size
         print(f"Extracted model input size from filename: {target_width}x{target_height}")
     else:
         print(f"Could not extract image size from filename: {model_filename}")
@@ -259,7 +240,7 @@ def test_rknn_model(rknn_file_path, test_images_folder):
             print(f"Using provided size: {target_width}x{target_height}")
         except (ValueError, KeyboardInterrupt):
             print("Invalid input or operation cancelled. Using default size 225x75")
-            target_width, target_height = 75, 225
+            target_width, target_height = 225, 75
 
     # Get list of test images
     images_in_folder = get_jpg_images(test_images_folder)
@@ -269,19 +250,17 @@ def test_rknn_model(rknn_file_path, test_images_folder):
     print(f"Found {len(images_in_folder)} images to test")
 
     try:
-        # Load RKNN model
-        print("Loading RKNN model for testing...")
-        rknn = RKNN()
-        ret = rknn.load_rknn(rknn_file_path)
-        if ret != 0:
-            print("Error loading RKNN model!")
-            return False
+        # Load ONNX model with ONNX Runtime
+        print("Loading ONNX model for testing...")
 
-        # Initialize runtime
-        ret = rknn.init_runtime(target='rk3588')
-        if ret != 0:
-            print("Error initializing RKNN runtime!")
-            return False
+        # Create ONNX Runtime session with optimizations
+        session = ort.InferenceSession(onnx_file_path, providers=['CPUExecutionProvider'])
+
+        # Get input details
+        input_details = session.get_inputs()[0]
+        input_name = input_details.name
+        input_shape = input_details.shape
+        print(f"Model input: {input_name}, shape: {input_shape}")
 
         print("Starting inference tests...")
         right_counter = 0
@@ -307,19 +286,23 @@ def test_rknn_model(rknn_file_path, test_images_folder):
             # if original_size != target_size:
             #     print(f"WARNING: Resizing image {os.path.basename(img_path)} from {original_width}x{original_height} to {target_width}x{target_height}")
 
-            # Resize to model input size using BICUBIC interpolation to match training
-            image = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_CUBIC)
+            # Resize to model input size
+            image = cv2.resize(image, (target_width, target_height))
+
+            # Convert BGR to RGB (OpenCV uses BGR, most models expect RGB)
+            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
             # Convert to float32 and normalize to [0,1] to match PyTorch ToTensor()
             image = image.astype(np.float32)
             image = image / 255.0
 
-            # Add batch dimension to get the RKNN NHWC format: batch, height, width, channels
-            image = np.expand_dims(image, axis=0)
+            # Convert to NCHW format (batch, channels, height, width) for PyTorch models
+            image = np.transpose(image, (2, 0, 1))  # HWC to CHW
+            image = np.expand_dims(image, axis=0)   # Add batch dimension
 
             # Run inference
             start_time = time.perf_counter()
-            outputs = rknn.inference(inputs=[image])
+            outputs = session.run(None, {input_name: image})
             end_time = time.perf_counter()
             inference_time = end_time - start_time
             inference_times.append(inference_time)
@@ -352,32 +335,34 @@ def test_rknn_model(rknn_file_path, test_images_folder):
             filename = os.path.basename(img_path)
             results_data.append((filename, result, is_correct_or_near_miss))
 
-            # print(f"{result}: {os.path.basename(img_path)} - Predicted: {pred_class} ({confidence:.3f}), Expected: {expected_class}, Scores: {pred_scores} ({inference_time*1000:.2f}ms)")
+            print(f"{result}: {os.path.basename(img_path)} - Predicted: {pred_class} ({confidence:.3f}), Expected: {expected_class}, Scores: {pred_scores} ({inference_time*1000:.2f}ms)")
 
-        wrong_pred_folder = os.path.join(test_images_folder, '../wrong_predictions')
-        print(f"\nSaving some wrong predictions in 'wrong_predictions' folder...")
+        # Save wrong predictions
+        wrong_pred_folder = os.path.join(test_images_folder, '../wrong_predictions_onnx')
+        print(f"\nSaving some wrong predictions in 'wrong_predictions_onnx' folder...")
         random.shuffle(wrong_examples)
         number_examples = min(20, len(wrong_examples))
         for wrong_img, pred_cls, conf in wrong_examples[:number_examples]:
             if not os.path.exists(wrong_pred_folder):
                 os.makedirs(wrong_pred_folder)
             base_name = os.path.basename(wrong_img)
-            save_path = os.path.join(wrong_pred_folder, f"pred{pred_cls}_conf{int(conf*100):02d}_{base_name}")
-            image = cv2.imwrite(save_path, cv2.imread(wrong_img))
+            save_path = os.path.join(wrong_pred_folder, f"onnx_pred{pred_cls}_conf{int(conf*100):02d}_{base_name}")
+            cv2.imwrite(save_path, cv2.imread(wrong_img))
 
         # Calculate statistics
         avg_inference_time = np.mean(inference_times) * 1000  # Convert to ms
         std_inference_time = np.std(inference_times) * 1000
 
         print(f"\n" + "="*60)
-        print(f"RKNN MODEL RESULTS SUMMARY:")
-        print(f"- Model: {os.path.basename(rknn_file_path)}")
+        print(f"ONNX MODEL RESULTS SUMMARY:")
+        print(f"- Model: {os.path.basename(onnx_file_path)}")
         print(f"- Total images: {total_images}")
         print(f"- Correct predictions: {right_counter}")
         print(f"- Accuracy: {right_counter/total_images*100:.2f}%")
         print(f"- Near misses: {near_misses} ({near_misses/total_images*100:.2f}%)")
         print(f"- Combined (correct + near miss): {(right_counter + near_misses)/total_images*100:.2f}%")
         print(f"- Average inference time: {avg_inference_time:.2f} ± {std_inference_time:.2f} ms")
+        print(f"- Execution provider: {session.get_providers()[0]}")
         print(f"="*60)
 
         # Generate and display detailed statistics
@@ -389,105 +374,30 @@ def test_rknn_model(rknn_file_path, test_images_folder):
 
     except Exception as e:
         print(f"Error during testing: {e}")
-        return False
-    finally:
-        rknn.release()
-
-def convert_onnx_to_rknn(onnx_file_path, output_name=None, quantization=False, test=None):
-    """
-    Convert ONNX model to RKNN format
-
-    Args:
-        onnx_file_path (str): Path to the input ONNX file
-        output_name (str): Optional custom output name for RKNN file
-        quantization (bool): Whether to enable quantization
-    """
-    if not os.path.exists(onnx_file_path):
-        print(f"Error: ONNX file '{onnx_file_path}' not found!")
-        return False
-
-    # Generate output filename
-    if output_name:
-        rknn_output = f"{output_name}.rknn"
-    else:
-        # Use input filename without extension
-        base_name = os.path.splitext(os.path.basename(onnx_file_path))[0]
-        rknn_output = f"{base_name}.rknn"
-
-    print(f"Converting {onnx_file_path} to {rknn_output}")
-
-
-    try:
-        # TODO: mean y std values copiados sin mirar de una resnet18 sobre imagenet
-        # Configure RKNN with normalization parameters
-
-        if not os.path.exists(rknn_output):
-            # Load ONNX model
-            print("Loading ONNX model...")
-
-            # Initialize RKNN with improved configuration for better accuracy
-            rknn = RKNN()
-            rknn.config(
-                mean_values=[[0.0, 0.0, 0.0]],
-                std_values=[[1.0, 1.0, 1.0]],
-                target_platform='rk3588',
-                optimization_level=1,  # Lower optimization for better accuracy
-                quantized_algorithm='normal',  # Specify algorithm explicitly
-            )
-            ret = rknn.load_onnx(model=onnx_file_path)
-
-            if ret != 0:
-                print("Error loading ONNX model!")
-                return False
-
-            # Build the model
-            print("Building RKNN model...")
-            ret = rknn.build(do_quantization=quantization)
-            if ret != 0:
-                print("Error building RKNN model!")
-                return False
-
-            # Export RKNN model
-            print(f"Exporting to {rknn_output}...")
-            ret = rknn.export_rknn(rknn_output)
-            if ret != 0:
-                print("Error exporting RKNN model!")
-                return False
-            print(f"Successfully converted to {rknn_output}")
-            rknn.release()
-
-        else:
-            print(f"RKNN model '{rknn_output}' already exists. Skipping conversion.")
-
-        if test is not None:
-            test_rknn_model(rknn_output, test)
-
-    except Exception as e:
-        print(f"Error during conversion: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def main():
-    parser = argparse.ArgumentParser(description='Convert ONNX model to RKNN format or test RKNN model')
-    parser.add_argument('input_file', help='Path to the input ONNX file (for conversion) or RKNN file (for testing)')
-    parser.add_argument('-o', '--output', help='Custom output name (without extension) for conversion')
-    parser.add_argument('-q', '--quantization', action='store_true',
-                       help='Enable quantization during conversion')
+    parser = argparse.ArgumentParser(description='Test ONNX model directly using ONNX Runtime')
+    parser.add_argument('onnx_file', help='Path to the ONNX model file')
     parser.add_argument('-t', '--test', nargs='?', const='/home/ubuntu/fotorrojo_ia/test_images/basic/',
-                       help='Test mode: run inference on RKNN model with JPG images from folder (default: /home/ubuntu/fotorrojo_ia/)')
+                       help='Test folder with JPG images (default: /home/ubuntu/fotorrojo_ia/test_images/basic/)')
 
     args = parser.parse_args()
 
-    # Just testing an already created model.
-    # Usage (with venv_rknn active): 'python3 onnx_to_rknn.py mymodel.rknn -t'
-    # test_rknn_model(args.input_file, args.test)
+    if not args.test:
+        print("Error: Test folder is required. Use -t option to specify test images folder.")
+        return
 
-    convert_onnx_to_rknn(
-        onnx_file_path=args.input_file,
-        output_name=args.output,
-        quantization=args.quantization,
-        test=args.test
-    )
+    # Test the ONNX model
+    success = test_onnx_model(args.onnx_file, args.test)
+
+    if success:
+        print("ONNX model testing completed successfully!")
+    else:
+        print("ONNX model testing failed!")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
-
