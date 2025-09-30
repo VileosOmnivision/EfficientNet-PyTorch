@@ -30,6 +30,7 @@ import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torchvision.models as models
 import torch.optim.lr_scheduler  # Add this import
+import torch.quantization
 from torchvision.transforms import InterpolationMode
 
 from export_onnx import FotorrojoNet, export_onnx_model
@@ -106,7 +107,7 @@ class FakeArgs:
     def __init__(self):
         # Training configuration
         self.short_name = "bilbao2"
-        self.description = "Intercubic resize. 2321 images per class."
+        self.description = "Quantization Aware Training. 2321 images per class."
         self.data = "C:/datasets/fotorrojo/dataset_margen_alrededor"
         self.arch = "fotorrojoNet"
         self.workers = 8
@@ -131,6 +132,8 @@ class FakeArgs:
         self.multiprocessing_distributed = False
         self.early_stopping = False
         self.early_stopping_patience = 10
+        self.qat = True # Enable Quantization-Aware Training
+        self.qat_epoch = 3 # Epoch to start converting model to quantized version
 
         # Learning rate scheduler parameters
         self.scheduler_factor = 0.7      # Factor to reduce LR by
@@ -138,7 +141,7 @@ class FakeArgs:
         self.scheduler_mode = 'min'      # Monitor validation loss decrease
 
         # Sanity test arguments
-        self.sanity_test = True
+        self.sanity_test = False
         self.test_data = r"C:\datasets\fotorrojo\ayto_Madrid_dic2024"  # Will default to data/test if empty
         self.sanity_model_weights = r""  # Will auto-find latest if empty
 
@@ -298,10 +301,17 @@ def main_worker(gpu, ngpus_per_node, args):
     num_classes = len(os.listdir(os.path.join(args.data, 'train')))
     model = FotorrojoNet(num_classes=num_classes, input_size=args.image_size)
 
+    if args.qat:
+        print("Preparing model for Quantization-Aware Training (QAT)")
+        model.fuse_model()
+        model.qconfig = torch.quantization.get_default_qat_qconfig('fbgemm')
+        torch.quantization.prepare_qat(model, inplace=True)
+
     if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
         # should always set the single device scope, otherwise,
         # DistributedDataParallel will use all available devices.
+
         if args.gpu is not None:
             torch.cuda.set_device(args.gpu)
             model.cuda(args.gpu)
@@ -448,6 +458,9 @@ def main_worker(gpu, ngpus_per_node, args):
     # Update criterion with class weights
     criterion = nn.CrossEntropyLoss(weight=class_weights).cuda(args.gpu)
 
+    # Ensure model parameters use float32 precision
+    model.float()
+
     if args.evaluate:
         res = validate(val_loader, model, criterion, args, output_path)
         with open(os.path.join(output_path, 'res.txt'), 'w') as f:
@@ -467,6 +480,13 @@ def main_worker(gpu, ngpus_per_node, args):
     learning_rates = []
 
     for epoch in range(args.start_epoch, args.epochs):
+        if args.qat and epoch > args.qat_epoch:
+            # Freeze quantization parameters after a few epochs
+            model.apply(torch.quantization.disable_observer)
+        if args.qat and epoch > args.qat_epoch + 1:
+            # Freeze batch norm stats
+            model.apply(torch.nn.intrinsic.qat.freeze_bn_stats)
+
         if args.distributed:
             train_sampler.set_epoch(epoch)
 
@@ -577,6 +597,28 @@ def main_worker(gpu, ngpus_per_node, args):
     logging.info("=" * 80)
     logging.info("EXPORTING MODEL TO ONNX")
     logging.info("=" * 80)
+
+    if args.qat:
+        print("Converting QAT model to a quantized integer model for export")
+
+        # Unwrap the model from DataParallel if necessary
+        model_to_convert = model.module if isinstance(model, torch.nn.DataParallel) else model
+
+        # Ensure quantization uses CPU kernels
+        torch.backends.quantized.engine = 'fbgemm'
+        torch.set_default_tensor_type(torch.FloatTensor)
+
+        # Ensure model is in eval mode and move everything to CPU
+        model_to_convert.eval()
+        model_to_convert.to('cpu')
+
+        # Move all parameters and buffers to CPU explicitly
+        for param in model_to_convert.parameters():
+            param.data = param.data.cpu()
+        for buffer in model_to_convert.buffers():
+            buffer.data = buffer.data.cpu()
+
+        torch.quantization.convert(model_to_convert, inplace=True)
 
     # Find the best model checkpoint
     best_checkpoint_path = os.path.join(output_path, f"{args.session_name}_model_best.pth.tar")
@@ -786,7 +828,7 @@ def accuracy(output, target, topk=(1,)):
 
         res = []
         for k in topk:
-            correct_k = correct[:k].reshape(-1).float().sum(0, keepdim=True)
+            correct_k = correct[:k].flatten().float().sum(0, keepdim=True)
             res.append(correct_k.mul_(100.0 / batch_size))
         if len(res) == 1:
             res = res[0]
@@ -953,7 +995,19 @@ def sanity_test(args):
         name = k[7:] if k.startswith('module.') else k
         new_state_dict[name] = v
 
-    model.load_state_dict(new_state_dict)
+    # Filter out QAT-only observer buffers before loading weights
+    model_state = model.state_dict()
+    filtered_state = {k: v for k, v in new_state_dict.items() if k in model_state}
+
+    dropped_keys = set(new_state_dict.keys()) - set(filtered_state.keys())
+    if dropped_keys:
+        print(f"Ignoring {len(dropped_keys)} quantization observer buffers during load")
+
+    missing_keys = set(model_state.keys()) - set(filtered_state.keys())
+    if missing_keys:
+        print(f"Warning: {len(missing_keys)} model parameters missing from checkpoint")
+
+    model.load_state_dict(filtered_state, strict=False)
 
     # Move model to GPU if available
     if args.gpu is not None:

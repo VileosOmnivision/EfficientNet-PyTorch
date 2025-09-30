@@ -273,7 +273,16 @@ def convert_onnx_to_rknn(onnx_file_path, output_name=None, quantization=False, t
 
             # Build the model
             print("Building RKNN model...")
-            ret = rknn.build(do_quantization=quantization)
+            if quantization:
+                # Provide a dataset for more accurate conversion/quantization
+                # IMPORTANT: Create a 'dataset.txt' file on your Linux machine.
+                # This file should contain the absolute paths to ~100-200 calibration images.
+                # Example command to create it:
+                # find /path/to/your/calibration/images -name "*.jpg" > dataset.txt
+                print("Using dataset for build process to improve accuracy...")
+                ret = rknn.build(do_quantization=quantization, dataset='./dataset.txt')
+            else:
+                ret = rknn.build(do_quantization=quantization)
             if ret != 0:
                 print("Error building RKNN model!")
                 return False
