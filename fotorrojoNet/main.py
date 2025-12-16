@@ -106,14 +106,14 @@ class FakeArgs:
     def __init__(self):
         # Training configuration
         self.short_name = "bilbao2"
-        self.description = "Intercubic resize. 2321 images per class."
-        self.data = "C:/datasets/fotorrojo/dataset_margen_alrededor"
+        self.description = "Overfitting. 2721 images per class: margen_alrededor + ayto_Madrid_dic2024"
+        self.data = "C:/datasets/fotorrojo/mixed_dataset"
         self.arch = "fotorrojoNet"
         self.workers = 8
-        self.epochs = 45
+        self.epochs = 50
         self.start_epoch = 0
         self.batch_size = 128
-        self.lr = 3e-3
+        self.lr = 6e-3
         self.momentum = 0.7
         self.weight_decay = 5e-4
         self.print_freq = 10
@@ -138,7 +138,7 @@ class FakeArgs:
         self.scheduler_mode = 'min'      # Monitor validation loss decrease
 
         # Sanity test arguments
-        self.sanity_test = True
+        self.sanity_test = False
         self.test_data = r"C:\datasets\fotorrojo\ayto_Madrid_dic2024"  # Will default to data/test if empty
         self.sanity_model_weights = r""  # Will auto-find latest if empty
 
