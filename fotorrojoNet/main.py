@@ -106,8 +106,8 @@ class FakeArgs:
     def __init__(self):
         # Training configuration
         self.short_name = "bilbao2"
-        self.description = "Overfitting. 2721 images per class: margen_alrededor + ayto_Madrid_dic2024"
-        self.data = "C:/datasets/fotorrojo/mixed_dataset"
+        self.description = "5360 train and 1340 images per class: margen_alrededor + ayto_Madrid_dic2024 + 606. Limpio doble luz y alguna imagen mal etiquetada vieja."
+        self.data = "C:/datasets/fotorrojo/mixed_dataset_20251216"
         self.arch = "fotorrojoNet"
         self.workers = 8
         self.epochs = 50
