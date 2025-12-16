@@ -431,10 +431,33 @@ def main_worker(gpu, ngpus_per_node, args):
 
     # Calculate class weights for imbalanced dataset after data loaders are created
     print("Calculating class distribution for balanced training...")
+
+    # Count train images per class
+    train_targets = torch.tensor(train_dataset.targets)
     class_counts = torch.zeros(num_classes)
-    for _, target in train_loader:
-        for t in target:
-            class_counts[t] += 1
+    for i in range(num_classes):
+        class_counts[i] = (train_targets == i).sum()
+
+    # Count validation images per class
+    val_dataset = val_loader.dataset
+    val_targets = torch.tensor(val_dataset.targets)
+    val_class_counts = torch.zeros(num_classes)
+    for i in range(num_classes):
+        val_class_counts[i] = (val_targets == i).sum()
+
+    # Log dataset info
+    logging.info("=" * 80)
+    logging.info("Dataset Information:")
+    logging.info("-" * 40)
+    logging.info(f"Training images: {len(train_dataset)}")
+    for i, count in enumerate(class_counts):
+        logging.info(f"  Class {i} ({train_dataset.classes[i]}): {int(count)}")
+
+    logging.info("-" * 40)
+    logging.info(f"Validation images: {len(val_dataset)}")
+    for i, count in enumerate(val_class_counts):
+        logging.info(f"  Class {i} ({val_dataset.classes[i]}): {int(count)}")
+    logging.info("=" * 80)
 
     # Calculate inverse frequency weights
     total_samples = class_counts.sum()
@@ -442,7 +465,8 @@ def main_worker(gpu, ngpus_per_node, args):
     class_weights = class_weights.cuda(args.gpu) if args.gpu is not None else class_weights
 
     print(f"Number of classes detected: {num_classes}")
-    print(f"Class distribution: {class_counts}")
+    print(f"Class distribution (Train): {class_counts}")
+    print(f"Class distribution (Val): {val_class_counts}")
     print(f"Class weights: {class_weights}")
 
     # Update criterion with class weights
@@ -478,7 +502,7 @@ def main_worker(gpu, ngpus_per_node, args):
         train_loss, train_acc = train(train_loader, model, criterion, optimizer, epoch, args)
 
         # evaluate on validation set
-        val_loss, val_acc, val_f1 = validate(val_loader, model, criterion, args, output_path)
+        val_loss, val_acc, val_f1 = validate(val_loader, model, criterion, args, output_path, epoch=epoch + 1)
 
         # Add to early stopping monitoring
         val_losses.append(val_loss)
@@ -660,7 +684,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
     # Return loss and accuracy for logging
     return losses.avg, top1.avg
 
-def validate(val_loader, model, criterion, args, output_path):
+def validate(val_loader, model, criterion, args, output_path, epoch=None):
     batch_time = AverageMeter('Time', ':6.3f')
     losses = AverageMeter('Loss', ':.4e')
     top1 = AverageMeter('Acc@1', ':6.2f')
@@ -695,6 +719,30 @@ def validate(val_loader, model, criterion, args, output_path):
             _, preds = torch.max(output, 1)
             all_preds.extend(preds.cpu().numpy())
             all_targets.extend(target.cpu().numpy())
+
+            # Save failed images if requested (every 10 epochs)
+            if epoch is not None and epoch % 20 == 0:
+                failed_dir = os.path.join(output_path, f"failed_images_epoch_{epoch}")
+                os.makedirs(failed_dir, exist_ok=True)
+
+                batch_preds = preds.cpu().numpy()
+                batch_targets = target.cpu().numpy()
+
+                for idx, (pred, true_class) in enumerate(zip(batch_preds, batch_targets)):
+                    if pred != true_class:
+                        # Calculate global index to get file path
+                        # Note: This assumes shuffle=False in val_loader and no distributed sampler for validation
+                        global_idx = i * args.batch_size + idx
+                        if hasattr(val_loader.dataset, 'samples') and global_idx < len(val_loader.dataset.samples):
+                            original_path, _ = val_loader.dataset.samples[global_idx]
+                            filename = os.path.basename(original_path)
+                            # Create new filename with pred and true class
+                            new_filename = f"pred_{pred}_true_{true_class}_{filename}"
+                            dest_path = os.path.join(failed_dir, new_filename)
+                            try:
+                                shutil.copy(original_path, dest_path)
+                            except Exception as e:
+                                print(f"Error copying failed image: {e}")
 
             # measure elapsed time
             batch_time.update(time.time() - end)
