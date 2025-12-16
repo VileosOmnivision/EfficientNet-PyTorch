@@ -114,7 +114,7 @@ class FakeArgs:
         self.start_epoch = 0
         self.batch_size = 128
         self.lr = 6e-3
-        self.momentum = 0.7
+        self.momentum = 0.9
         self.weight_decay = 5e-4
         self.print_freq = 10
         self.resume = ""
@@ -398,12 +398,12 @@ def main_worker(gpu, ngpus_per_node, args):
                 transforms.Resize(image_size, interpolation=InterpolationMode.BICUBIC),
             ], p=0.8),
             transforms.RandomHorizontalFlip(),
+            # Augmentations enabled for robustness
+            transforms.ColorJitter(brightness=(0.8, 1.2), contrast=(0.8, 1.2)),
+            transforms.RandomAffine(degrees=(-10,10), translate=(0.1, 0.1)),
+
             transforms.ToTensor(),
             RGBtoBGR(),  # Convert RGB to BGR to match OpenCV format used in RKNN inference
-            # transforms.ColorJitter(brightness=(0.8, 1.2),
-            #                        contrast=(0.8, 1.2)
-            #                        ),
-            # transforms.RandomAffine(degrees=(-10,10), translate=(0.1, 0.1)),
             # normalize,
         ]))
 
