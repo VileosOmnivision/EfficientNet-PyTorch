@@ -28,9 +28,10 @@ class FotorrojoNet(nn.Module):
         self.flattened_features = self._get_flattened_size()
 
         self.fc_block = nn.Sequential(
-            nn.Linear(self.flattened_features, 16),
+            nn.Linear(self.flattened_features, 128),
             nn.ReLU(),
-            nn.Linear(16, num_classes),
+            nn.Dropout(0.5),
+            nn.Linear(128, num_classes),
             nn.Softmax(dim=1)
         )
 

@@ -105,7 +105,7 @@ MODEL_PATH = r"C:\git\EfficientNet-PyTorch\fotorrojoNet"
 class FakeArgs:
     def __init__(self):
         # Training configuration
-        self.short_name = "bilbao2"
+        self.short_name = "bilbao6_2"
         self.description = "5360 train and 1340 images per class: margen_alrededor + ayto_Madrid_dic2024 + 606. Limpio doble luz y alguna imagen mal etiquetada vieja."
         self.data = "C:/datasets/fotorrojo/mixed_dataset_20251216"
         self.arch = "fotorrojoNet"
@@ -325,7 +325,7 @@ def main_worker(gpu, ngpus_per_node, args):
         model = torch.nn.DataParallel(model).cuda()
 
     # define loss function (criterion) and optimizer (will be updated with class weights later)
-    criterion = nn.CrossEntropyLoss().cuda(args.gpu)
+    criterion = nn.NLLLoss().cuda(args.gpu)
 
     optimizer = torch.optim.SGD(model.parameters(), args.lr,
                                 momentum=args.momentum,
@@ -396,8 +396,8 @@ def main_worker(gpu, ngpus_per_node, args):
             transforms.RandomApply([
                 transforms.RandomCrop((60, 180), padding=0, pad_if_needed=False),
                 transforms.Resize(image_size, interpolation=InterpolationMode.BICUBIC),
-            ], p=0.4),
-            # transforms.RandomHorizontalFlip(),
+            ], p=0.8),
+            transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             RGBtoBGR(),  # Convert RGB to BGR to match OpenCV format used in RKNN inference
             # transforms.ColorJitter(brightness=(0.8, 1.2),
@@ -446,7 +446,7 @@ def main_worker(gpu, ngpus_per_node, args):
     print(f"Class weights: {class_weights}")
 
     # Update criterion with class weights
-    criterion = nn.CrossEntropyLoss(weight=class_weights).cuda(args.gpu)
+    criterion = nn.NLLLoss(weight=class_weights).cuda(args.gpu)
 
     if args.evaluate:
         res = validate(val_loader, model, criterion, args, output_path)
@@ -626,7 +626,7 @@ def train(train_loader, model, criterion, optimizer, epoch, args):
 
         # compute output
         output = model(images)
-        loss = criterion(output, target)
+        loss = criterion(torch.log(output + 1e-9), target)
 
         # Debug: Print some output statistics
         if i == 0:  # Only print for first batch to avoid spam
@@ -683,7 +683,7 @@ def validate(val_loader, model, criterion, args, output_path):
 
             # compute output
             output = model(images)
-            loss = criterion(output, target)
+            loss = criterion(torch.log(output + 1e-9), target)
 
             # measure accuracy and record loss
             acc1 = accuracy(output, target)
