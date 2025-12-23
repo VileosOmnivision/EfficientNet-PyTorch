@@ -105,8 +105,8 @@ MODEL_PATH = r"C:\git\EfficientNet-PyTorch\fotorrojoNet"
 class FakeArgs:
     def __init__(self):
         # Training configuration
-        self.short_name = "bilbao6_2"
-        self.description = "5360 train and 1340 images per class: margen_alrededor + ayto_Madrid_dic2024 + 606. Limpio doble luz y alguna imagen mal etiquetada vieja."
+        self.short_name = "bilbao6_3"
+        self.description = "stronger augmentation and optimized momentum"
         self.data = "C:/datasets/fotorrojo/mixed_dataset_20251216"
         self.arch = "fotorrojoNet"
         self.workers = 8
@@ -853,6 +853,9 @@ def plot_training_metrics(epoch_numbers, train_losses, train_accuracies, val_los
     learning_rates = np.array(learning_rates, dtype=float)
 
     # Create a figure with subplots
+    # Close any existing figures to prevent memory leak
+    plt.close('all')
+
     fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(15, 10))
     fig.suptitle(f'Training Metrics Evolution - {session_name}', fontsize=16)
 
@@ -902,6 +905,9 @@ def plot_training_metrics(epoch_numbers, train_losses, train_accuracies, val_los
     return plot_path
 
 def plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate, session_name):
+    # Close any existing figures to prevent memory leak
+    plt.close('all')
+
     plt.figure(figsize=(10, 8), dpi=100)
     plt.axis('scaled')
     plt.xlim([0, 1])
@@ -914,7 +920,7 @@ def plot_roc(output_path, roc_auc, true_positive_rate, false_positive_rate, sess
     plt.ylabel("True Positive Rate")
     # Save with training session name and datetime in filename
     plt.savefig(f"{output_path}/{session_name}_roc.jpg")
-    #plt.show()
+    plt.close() # Explicitly close the figure after saving
 
 def statistics_calc(output_path, y_pred, y_true, session_name):
     # Confusion matrix
